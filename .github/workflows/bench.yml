@@ -1,9 +1,6 @@
 name: Bench
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -14,7 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            .python-version
+            pyproject.toml
+            hatch.toml
+            uv.lock
       - name: Run benchmark suite
         id: bench
         run: |
@@ -45,3 +50,4 @@ jobs:
         with:
           name: bench-results
           path: bench/results/latest.json
+          if-no-files-found: ignore

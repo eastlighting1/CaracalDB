@@ -21,49 +21,83 @@ def _elapsed_ms(fn: Callable[[], object]) -> float:
     return (time.perf_counter() - start) * 1000.0
 
 
-def bench_1hop(n: int = 10_000, degree: int = 8) -> BenchResult:
+def bench_1hop(n: int = 200_000, degree: int = 16, repeats: int = 1000) -> BenchResult:
     edges = np.arange(n * degree, dtype=np.uint64).reshape(n, degree) % n
-    seeds = np.arange(0, n, max(1, n // 256), dtype=np.uint64)
+    seeds = np.arange(0, n, max(1, n // 1024), dtype=np.uint64)
 
     def run() -> int:
-        return int(edges[seeds].sum())
+        total = 0
+        for _ in range(repeats):
+            total += int(edges[seeds].sum())
+        return total
 
-    return {"scenario": "1hop", "metric": "ms", "value": _elapsed_ms(run), "n": n}
+    return {
+        "scenario": "1hop",
+        "metric": "ms",
+        "value": _elapsed_ms(run),
+        "n": n,
+        "degree": degree,
+        "repeats": repeats,
+    }
 
 
-def bench_2hop(n: int = 10_000, degree: int = 8) -> BenchResult:
+def bench_2hop(n: int = 100_000, degree: int = 16, repeats: int = 120) -> BenchResult:
     edges = np.arange(n * degree, dtype=np.uint64).reshape(n, degree) % n
-    seeds = np.arange(0, n, max(1, n // 128), dtype=np.uint64)
+    seeds = np.arange(0, n, max(1, n // 512), dtype=np.uint64)
 
     def run() -> int:
-        first = edges[seeds].ravel()
-        second = edges[first].ravel()
-        return int(second.sum())
+        total = 0
+        for _ in range(repeats):
+            first = edges[seeds].ravel()
+            second = edges[first].ravel()
+            total += int(second.sum())
+        return total
 
-    return {"scenario": "2hop", "metric": "ms", "value": _elapsed_ms(run), "n": n}
+    return {
+        "scenario": "2hop",
+        "metric": "ms",
+        "value": _elapsed_ms(run),
+        "n": n,
+        "degree": degree,
+        "repeats": repeats,
+    }
 
 
-def bench_knn(n: int = 2_000, dim: int = 32, k: int = 10) -> BenchResult:
+def bench_knn(n: int = 50_000, dim: int = 64, k: int = 10, repeats: int = 20) -> BenchResult:
     rng = np.random.default_rng(42)
     vectors = rng.normal(size=(n, dim)).astype(np.float32)
     query = vectors[0]
 
-    def run() -> np.ndarray[Any, Any]:
-        distances = np.linalg.norm(vectors - query, axis=1)
-        return np.argpartition(distances, k)[:k]
+    def run() -> int:
+        total = 0
+        for _ in range(repeats):
+            distances = np.linalg.norm(vectors - query, axis=1)
+            total += int(np.argpartition(distances, k)[:k].sum())
+        return total
 
-    return {"scenario": "knn", "metric": "ms", "value": _elapsed_ms(run), "n": n}
+    return {
+        "scenario": "knn",
+        "metric": "ms",
+        "value": _elapsed_ms(run),
+        "n": n,
+        "dim": dim,
+        "k": k,
+        "repeats": repeats,
+    }
 
 
-def bench_neighbor_sample(n: int = 10_000, degree: int = 16, fanout: int = 4) -> BenchResult:
+def bench_neighbor_sample(
+    n: int = 100_000, degree: int = 32, fanout: int = 8, repeats: int = 60
+) -> BenchResult:
     rng = random.Random(42)
     adjacency = [tuple((i * degree + j) % n for j in range(degree)) for i in range(n)]
-    seeds = list(range(0, n, max(1, n // 128)))
+    seeds = list(range(0, n, max(1, n // 1024)))
 
     def run() -> int:
         total = 0
-        for seed in seeds:
-            total += sum(rng.sample(adjacency[seed], fanout))
+        for _ in range(repeats):
+            for seed in seeds:
+                total += sum(rng.sample(adjacency[seed], fanout))
         return total
 
     return {
@@ -71,6 +105,9 @@ def bench_neighbor_sample(n: int = 10_000, degree: int = 16, fanout: int = 4) ->
         "metric": "ms",
         "value": _elapsed_ms(run),
         "n": n,
+        "degree": degree,
+        "fanout": fanout,
+        "repeats": repeats,
     }
 
 

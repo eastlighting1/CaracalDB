@@ -2,25 +2,35 @@
   {
     "scenario": "1hop",
     "metric": "ms",
-    "value": 1000.0,
-    "n": 10000
+    "value": 15.0,
+    "n": 200000,
+    "degree": 16,
+    "repeats": 1000
   },
   {
     "scenario": "2hop",
     "metric": "ms",
-    "value": 1000.0,
-    "n": 10000
+    "value": 30.0,
+    "n": 100000,
+    "degree": 16,
+    "repeats": 120
   },
   {
     "scenario": "knn",
     "metric": "ms",
-    "value": 1000.0,
-    "n": 2000
+    "value": 90.0,
+    "n": 50000,
+    "dim": 64,
+    "k": 10,
+    "repeats": 20
   },
   {
     "scenario": "neighbor_sample",
     "metric": "ms",
-    "value": 1000.0,
-    "n": 10000
+    "value": 140.0,
+    "n": 100000,
+    "degree": 32,
+    "fanout": 8,
+    "repeats": 60
   }
 ]

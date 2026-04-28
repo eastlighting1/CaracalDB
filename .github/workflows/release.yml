@@ -101,10 +101,66 @@ jobs:
           uv run python -c "import caracaldb as cdb; print(cdb.__version__)"
           uv run caracal --help
 
+  # -- Run benchmark gate as part of the release flow --------------------------
+  bench:
+    name: Benchmark gate
+    needs: validate-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            .python-version
+            pyproject.toml
+            hatch.toml
+            uv.lock
+
+      - name: Run benchmark suite
+        shell: bash
+        run: |
+          uv run --with pytest python -c "
+          import json, pathlib
+          from bench.harness import run_all, write_results
+          results = run_all()
+          write_results(pathlib.Path('bench/results/latest.json'), results)
+          print(json.dumps(results, indent=2))
+          "
+
+      - name: Compare against baseline
+        shell: bash
+        run: |
+          uv run --with pytest python -c "
+          import json, pathlib, sys
+          from bench.harness import compare_against_baseline
+          baseline = json.loads(pathlib.Path('bench/results/baseline.json').read_text())
+          latest = json.loads(pathlib.Path('bench/results/latest.json').read_text())
+          regressions = compare_against_baseline(latest, baseline, tolerance=0.30)
+          if regressions:
+              print('REGRESSIONS:')
+              for line in regressions:
+                  print(' -', line)
+              sys.exit(1)
+          print('No regressions detected.')
+          "
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results
+          path: bench/results/latest.json
+          if-no-files-found: ignore
+
   # -- Build pure-Python wheel and source distribution -------------------------
   build-dist:
     name: Build distributions
-    needs: [validate-version, test]
+    needs: [validate-version, test, bench]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
