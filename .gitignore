@@ -22,12 +22,17 @@ env/
 *.crcl/
 *.crcl
 
+# Private docs by default; allow versioned public notes.
+docs/*
+!docs/*/
+docs/*/*
+!docs/*/v*.md
+
 # Editor and OS files
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
 
-docs
 main.py
 .claude/settings.local.json
