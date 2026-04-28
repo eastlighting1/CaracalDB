@@ -1,0 +1,41 @@
+{
+  "node": "Program",
+  "statements": [
+    {
+      "node": "DmlStmt",
+      "op": "insert_triples",
+      "payload": {
+        "triples": [
+          {
+            "node": "TriplePattern",
+            "subject": {
+              "node": "QName",
+              "value": ":TP53"
+            },
+            "predicate": "a",
+            "object": {
+              "node": "QName",
+              "value": "bio:Gene"
+            }
+          },
+          {
+            "node": "TriplePattern",
+            "subject": {
+              "node": "QName",
+              "value": ":TP53"
+            },
+            "predicate": {
+              "node": "QName",
+              "value": "bio:symbol"
+            },
+            "object": {
+              "node": "Literal",
+              "kind": "string",
+              "value": "TP53"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

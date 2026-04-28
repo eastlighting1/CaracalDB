@@ -1,0 +1,183 @@
+namespace caracal.catalog;
+
+file_identifier "CRCL";
+
+/// Primitive and graph-aware scalar types supported by the catalog.
+enum TypeKind : ushort {
+  Unknown = 0,
+  Bool = 1,
+  Int8 = 2,
+  Int16 = 3,
+  Int32 = 4,
+  Int64 = 5,
+  UInt8 = 6,
+  UInt16 = 7,
+  UInt32 = 8,
+  UInt64 = 9,
+  Float32 = 10,
+  Float64 = 11,
+  Decimal = 12,
+  String = 13,
+  Bytes = 14,
+  Date = 15,
+  Time = 16,
+  DateTime = 17,
+  Duration = 18,
+  Iri = 19,
+  Uuid = 20,
+  Node = 21,
+  Edge = 22,
+  Triple = 23,
+  Path = 24,
+  Subgraph = 25,
+  Class = 26,
+  Property = 27,
+  Embedding = 28,
+  Adjacency = 29,
+  List = 30,
+  Map = 31,
+  Struct = 32,
+  Union = 33,
+  Vector = 34,
+  Matrix = 35
+}
+
+enum PropertyKind : byte {
+  Object = 0,
+  Datatype = 1
+}
+
+enum PropertyCharacteristic : ushort {
+  Symmetric = 0,
+  Transitive = 1,
+  Reflexive = 2,
+  Inverse = 3,
+  Functional = 4
+}
+
+enum ConstraintKind : byte {
+  Required = 0,
+  Unique = 1,
+  Check = 2,
+  Default = 3
+}
+
+enum IndexKind : byte {
+  Csr = 0,
+  Csc = 1,
+  Hnsw = 2,
+  Ivf = 3,
+  Btree = 4,
+  Hash = 5,
+  Bitmap = 6,
+  ZoneMap = 7
+}
+
+enum SortDirection : byte {
+  None = 0,
+  Asc = 1,
+  Desc = 2
+}
+
+/// TypeRefT mirrors Tuft type references while remaining storage-oriented.
+table TypeRefT {
+  kind:TypeKind = Unknown;
+  name:string;
+  params:[TypeRefT];
+  int_params:[ulong];
+  precision:ushort = 0;
+  scale:ushort = 0;
+  nullable:bool = true;
+}
+
+table ConstraintT {
+  kind:ConstraintKind;
+  expr:string;
+}
+
+table FieldT {
+  name:string (required);
+  type:TypeRefT (required);
+  constraints:[ConstraintT];
+  default_expr:string;
+  doc:string;
+}
+
+table ClassT {
+  cid:uint;
+  iri:string (required);
+  local_name:string;
+  superclass_iris:[string];
+  fields:[FieldT];
+  doc:string;
+}
+
+table PropertyT {
+  pid:uint;
+  iri:string (required);
+  local_name:string;
+  kind:PropertyKind;
+  superproperty_iris:[string];
+  domain_iris:[string];
+  range_type:TypeRefT;
+  range_iris:[string];
+  characteristics:[PropertyCharacteristic];
+  fields:[FieldT];
+  inverse_iri:string;
+  doc:string;
+}
+
+table GraphT {
+  gid:uint;
+  name:string (required);
+  ontology_iris:[string];
+  class_iris:[string];
+  property_iris:[string];
+  doc:string;
+}
+
+table IndexOptionT {
+  key:string (required);
+  value:string;
+}
+
+table IndexT {
+  iid:uint;
+  name:string;
+  kind:IndexKind;
+  target_class_iri:string;
+  target_property_iri:string;
+  fields:[string];
+  sort:SortDirection = None;
+  options:[IndexOptionT];
+  unique:bool = false;
+}
+
+table PrefixT {
+  prefix:string (required);
+  iri:string (required);
+}
+
+table OntologyT {
+  iri:string (required);
+  base_iri:string;
+  prefixes:[PrefixT];
+  class_iris:[string];
+  property_iris:[string];
+  imported_iris:[string];
+  doc:string;
+}
+
+table CatalogT {
+  format_version:uint = 1;
+  catalog_id:string;
+  created_at:string;
+  updated_at:string;
+  ontologies:[OntologyT];
+  classes:[ClassT];
+  properties:[PropertyT];
+  graphs:[GraphT];
+  indexes:[IndexT];
+}
+
+root_type CatalogT;

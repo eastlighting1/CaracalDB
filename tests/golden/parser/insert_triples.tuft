@@ -1,0 +1,4 @@
+INSERT TRIPLES {
+  :TP53 a bio:Gene .
+  :TP53 bio:symbol 'TP53' .
+};

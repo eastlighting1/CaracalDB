@@ -1,0 +1,115 @@
+{
+  "node": "Program",
+  "statements": [
+    {
+      "node": "QueryStmt",
+      "query": {
+        "node": "Query",
+        "clauses": [
+          {
+            "node": "MatchClause",
+            "patterns": [
+              {
+                "node": "Pattern",
+                "elements": [
+                  {
+                    "node": "NodePattern",
+                    "var": {
+                      "node": "Ident",
+                      "name": "g",
+                      "escaped": false
+                    },
+                    "labels": [
+                      {
+                        "node": "QName",
+                        "value": "Gene"
+                      }
+                    ],
+                    "props": {
+                      "node": "PropMap",
+                      "entries": [
+                        {
+                          "node": "PropEntry",
+                          "key": {
+                            "node": "Ident",
+                            "name": "symbol",
+                            "escaped": false
+                          },
+                          "value": {
+                            "node": "Literal",
+                            "kind": "string",
+                            "value": "TP53"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "optional": false
+          },
+          {
+            "node": "WhereClause",
+            "predicate": {
+              "node": "BinOp",
+              "op": "=",
+              "left": {
+                "node": "PathExpr",
+                "root": {
+                  "node": "Ident",
+                  "name": "g",
+                  "escaped": false
+                },
+                "steps": [
+                  {
+                    "node": "Ident",
+                    "name": "symbol",
+                    "escaped": false
+                  }
+                ]
+              },
+              "right": {
+                "node": "Literal",
+                "kind": "string",
+                "value": "TP53"
+              }
+            }
+          },
+          {
+            "node": "ReturnClause",
+            "projections": [
+              {
+                "node": "Projection",
+                "expr": {
+                  "node": "PathExpr",
+                  "root": {
+                    "node": "Ident",
+                    "name": "g",
+                    "escaped": false
+                  },
+                  "steps": [
+                    {
+                      "node": "Ident",
+                      "name": "symbol",
+                      "escaped": false
+                    }
+                  ]
+                }
+              }
+            ],
+            "distinct": false
+          }
+        ],
+        "modifiers": {
+          "node": "Modifiers",
+          "limit": {
+            "node": "Literal",
+            "kind": "int",
+            "value": 10
+          }
+        }
+      }
+    }
+  ]
+}

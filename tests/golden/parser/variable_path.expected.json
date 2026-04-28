@@ -1,0 +1,124 @@
+{
+  "node": "Program",
+  "statements": [
+    {
+      "node": "QueryStmt",
+      "query": {
+        "node": "Query",
+        "clauses": [
+          {
+            "node": "MatchClause",
+            "patterns": [
+              {
+                "node": "Pattern",
+                "elements": [
+                  {
+                    "node": "NodePattern",
+                    "var": {
+                      "node": "Ident",
+                      "name": "a",
+                      "escaped": false
+                    },
+                    "labels": [
+                      {
+                        "node": "QName",
+                        "value": "Gene"
+                      }
+                    ]
+                  },
+                  {
+                    "node": "RelPattern",
+                    "types": [
+                      {
+                        "node": "QName",
+                        "value": "interactsWith"
+                      }
+                    ],
+                    "direction": "both",
+                    "hop_range": {
+                      "node": "HopRange",
+                      "min_hops": 1,
+                      "max_hops": 3
+                    }
+                  },
+                  {
+                    "node": "NodePattern",
+                    "var": {
+                      "node": "Ident",
+                      "name": "b",
+                      "escaped": false
+                    },
+                    "labels": [
+                      {
+                        "node": "QName",
+                        "value": "Gene"
+                      }
+                    ]
+                  }
+                ],
+                "binding": {
+                  "node": "Ident",
+                  "name": "p",
+                  "escaped": false
+                }
+              }
+            ],
+            "optional": false
+          },
+          {
+            "node": "ReturnClause",
+            "projections": [
+              {
+                "node": "Projection",
+                "expr": {
+                  "node": "PathExpr",
+                  "root": {
+                    "node": "Ident",
+                    "name": "b",
+                    "escaped": false
+                  },
+                  "steps": [
+                    {
+                      "node": "Ident",
+                      "name": "symbol",
+                      "escaped": false
+                    }
+                  ]
+                }
+              },
+              {
+                "node": "Projection",
+                "expr": {
+                  "node": "FnCall",
+                  "name": {
+                    "node": "QName",
+                    "value": "length"
+                  },
+                  "args": [
+                    {
+                      "node": "Var",
+                      "name": {
+                        "node": "Ident",
+                        "name": "p",
+                        "escaped": false
+                      }
+                    }
+                  ]
+                },
+                "alias": {
+                  "node": "Ident",
+                  "name": "hops",
+                  "escaped": false
+                }
+              }
+            ],
+            "distinct": false
+          }
+        ],
+        "modifiers": {
+          "node": "Modifiers"
+        }
+      }
+    }
+  ]
+}

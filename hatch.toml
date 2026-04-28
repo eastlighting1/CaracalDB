@@ -1,0 +1,21 @@
+[envs.default]
+features = ["dev", "io", "ml"]
+
+[envs.default.scripts]
+test = "pytest {args:tests}"
+test-fastfail = "pytest -x -q {args:tests}"
+lint = [
+  "ruff check caracaldb tests",
+  "black --check caracaldb tests",
+  "mypy caracaldb",
+]
+format = [
+  "ruff check --fix caracaldb tests",
+  "black caracaldb tests",
+]
+
+[envs.test]
+features = ["dev", "io"]
+
+[envs.test.scripts]
+run = "pytest {args:tests}"

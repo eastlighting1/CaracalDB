@@ -1,0 +1,6 @@
+CREATE CLASS bio:Gene
+  SUBCLASSOF bio:BiologicalEntity
+  PROPERTIES (
+    symbol STRING REQUIRED UNIQUE,
+    embedding VECTOR<F32,768>
+  );

@@ -1,0 +1,4 @@
+MATCH (g:Gene {symbol:'TP53'})
+WHERE g.symbol = 'TP53'
+RETURN g.symbol
+LIMIT 10;

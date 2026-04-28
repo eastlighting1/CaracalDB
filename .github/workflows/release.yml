@@ -1,0 +1,266 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"        # v0.1.0
+      - "v[0-9]+.[0-9]+.[0-9]+-*"      # v0.1.0-alpha.1
+
+env:
+  PACKAGE_NAME: caracaldb
+
+permissions:
+  contents: read
+
+jobs:
+  # -- Validate the tag matches caracaldb/_version.py -------------------------
+  validate-version:
+    name: Validate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      is-prerelease: ${{ steps.get-version.outputs.is-prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract tag version
+        id: get-version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "version=${TAG}" >> "$GITHUB_OUTPUT"
+          if [[ "$TAG" == *"-"* ]]; then
+            echo "is-prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is-prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check package version matches tag
+        shell: bash
+        run: |
+          PKG_VER=$(python3 -c 'import runpy; print(runpy.run_path("caracaldb/_version.py")["__version__"])')
+          TAG_VER="${GITHUB_REF#refs/tags/v}"
+          TAG_BASE="${TAG_VER%%-*}"
+          if [[ "$PKG_VER" != "$TAG_BASE" ]]; then
+            echo "Version mismatch: caracaldb/_version.py=$PKG_VER, tag=$TAG_BASE"
+            exit 1
+          fi
+          echo "Version OK: $PKG_VER"
+
+      - name: Check release notes exist
+        shell: bash
+        run: |
+          TAG_VER="${GITHUB_REF#refs/tags/v}"
+          TAG_BASE="${TAG_VER%%-*}"
+          test -f "docs/release/v${TAG_BASE}.md"
+
+  # -- Run release-facing checks before building artifacts ---------------------
+  test:
+    name: Test / py${{ matrix.python-version }}
+    needs: validate-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            .python-version
+            pyproject.toml
+            hatch.toml
+            uv.lock
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install flatc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatbuffers-compiler
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra io
+
+      - name: Release smoke tests
+        run: uv run pytest tests/test_release_smoke.py -q
+
+      - name: Import and CLI smoke tests
+        run: |
+          uv run python -c "import caracaldb as cdb; print(cdb.__version__)"
+          uv run caracal --help
+
+  # -- Build pure-Python wheel and source distribution -------------------------
+  build-dist:
+    name: Build distributions
+    needs: [validate-version, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            .python-version
+            pyproject.toml
+            hatch.toml
+            uv.lock
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel and sdist
+        shell: bash
+        run: |
+          rm -rf dist
+          uv run --with hatch hatch build
+
+      - name: Verify artifact names
+        shell: bash
+        run: |
+          VERSION="${{ needs.validate-version.outputs.version }}"
+          BASE_VERSION="${VERSION%%-*}"
+          test -f "dist/${PACKAGE_NAME}-${BASE_VERSION}-py3-none-any.whl"
+          test -f "dist/${PACKAGE_NAME}-${BASE_VERSION}.tar.gz"
+          ls -lh dist/
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/*
+          if-no-files-found: error
+
+  # -- Smoke-test the built wheel before publishing ----------------------------
+  test-dist:
+    name: Smoke test dist / ${{ matrix.os }} / py${{ matrix.python-version }}
+    needs: build-dist
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: macos-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+
+      - name: Install wheel and test
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+          python -c "import caracaldb as cdb; print(cdb.__version__)"
+          caracal --help
+
+  # -- Publish to PyPI with Trusted Publishing --------------------------------
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build-dist, test-dist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/caracaldb/
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+
+      - name: List artifacts to be published
+        run: ls -lh dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  # -- Create GitHub Release ---------------------------------------------------
+  github-release:
+    name: GitHub Release
+    needs: [validate-version, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+
+      - name: Prepare release notes
+        id: release-notes
+        shell: bash
+        run: |
+          VERSION="${{ needs.validate-version.outputs.version }}"
+          BASE_VERSION="${VERSION%%-*}"
+          NOTES="docs/release/v${BASE_VERSION}.md"
+          if [[ -f "$NOTES" ]]; then
+            cp "$NOTES" RELEASE_NOTES.md
+          else
+            PREV_TAG=$(git tag --sort=-creatordate | sed -n '2p')
+            if [[ -z "$PREV_TAG" ]]; then
+              git log --pretty=format:"- %s (%h)" | head -30 > RELEASE_NOTES.md
+            else
+              git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h)" > RELEASE_NOTES.md
+            fi
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "CaracalDB ${{ github.ref_name }}"
+          prerelease: ${{ needs.validate-version.outputs.is-prerelease }}
+          body_path: RELEASE_NOTES.md
+          files: dist/*
+          generate_release_notes: true

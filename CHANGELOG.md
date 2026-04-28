@@ -1,0 +1,82 @@
+# Changelog
+
+All notable changes to this project will be documented in this file. The
+format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
+the project adheres to [Semantic Versioning](https://semver.org/).
+
+## [0.1.0] — 2026-04-27
+
+The first public release of **CaracalDB** — an embedded, ontology-leaning,
+Arrow-native analytical GraphDB. Reaches the M5 milestone (CDB-080…088 +
+CDB-092…094) with 270+ tests, 4 micro-benchmarks, and three executable
+tutorial notebooks.
+
+### Added
+
+- **Storage**: `.crcl` directory bundle, MANIFEST + WAL + checkpoint +
+  recovery, per-class node store and per-property edge store with chunked
+  Arrow IPC segments, sorted-blob IRI dictionary, page buffer pool.
+- **Ontology**: catalog (FlatBuffers JSON envelope), class hierarchy DAG,
+  Roaring class-closure bitmap, forward-chaining `INFER CLOSURE`
+  (SYMMETRIC / TRANSITIVE).
+- **Tuft language**: Lark grammar with arrow / label-union / hop-range
+  pattern syntax, span-based diagnostics, binder, type checker, scalar /
+  aggregate / graph / vector built-in registry.
+- **Planner**: logical plan (NodeScan / Selection / Project / Aggregate
+  / OrderBy / Limit), pattern compiler (NodeScan + Expand + Join chain),
+  predicate pushdown / projection pruning, simple cost model, `WITH`
+  pipeline splitter.
+- **Executor**: pull-based PhysicalOperator base, NodeScan / Filter /
+  Project, Expand (forward / reverse / both, optional eid alias),
+  variable-length VarPath, HashJoin (inner / left + prefix), HashAggregate
+  (count\* / sum / avg / min / max / collect), TopK, ClosureScan,
+  TripleScan, KnnOperator, NeighborSample (layered fan-out + reservoir
+  sampling), RandomWalk / Node2Vec, EXPORT SUBGRAPH AS ARROW.
+- **Adjacency**: CSR / CSC builders (`np.argsort` + `bincount` +
+  `cumsum`), mmap reader with vectorised `batch_neighbors`.
+- **Vector index**: HNSW wrapper around `hnswlib` with atomic save / load.
+- **MVCC + transactions**: SnapshotId, named snapshot registry, single
+  writer + many readers with write-write conflict detection
+  (`CDB-8002`), AS_OF SNAPSHOT plumbing through ExecCtx.
+- **ML / GNN**: Subgraph IR, PyG / DGL / jraph adapters
+  (importorskip-or-actionable-error), Lynxes GraphFrame bridge,
+  `conn.neighbor_loader(...)`.
+- **UDF / Procedure**: Pure Tuft UDFs, `@cdb.udf` Python decorator with
+  type contract, IF / FOR / WHILE procedure runtime with iteration cap.
+- **Feature store**: `OnlineFeatureView` with point-in-time lookup
+  (p99 < 5 ms target on small tables).
+- **Observability**: EXPLAIN tree renderer, PROFILE per-operator metrics,
+  in-memory tracer (OTLP-compatible duck typing).
+- **CLI**: `caracal init / run / explain / bench` (Typer).
+- **Bench**: 1-hop / 2-hop / k-NN / NeighborSample harness with baseline
+  comparison and a `bench.yml` GitHub Action.
+- **Quality**: parser fuzz, recovery fault-injection matrix, MVCC
+  reader-writer stress.
+- **Examples**: `examples/{biomed,fraud,recsys}.ipynb` smoke-tested in CI.
+
+### Documented
+
+- `docs/01_language_spec.md` — `04_caracaldb_implementation.md` design
+  documents (carried forward from M0).
+- `docs/format/csr.md` — CSR / CSC on-disk format.
+- `docs/milestones/M0…M5-gate.md` — milestone-by-milestone gate reports.
+
+### Known limitations
+
+- The M5 release intentionally **does not** include the user-facing Tuft
+  language reference (`docs/user/tuft-ref.md`), error catalogue
+  (`docs/errors/*.md`), or API reference (`docs/api/*.md`) — those are
+  carried over to v0.2.0 (originally CDB-089/090/091).
+- ``conn.sql`` still wraps the M1 single-class shortcut for unprefixed
+  names; the pattern compiler's logical output is not yet wired through
+  the public API. Multi-hop pattern queries should compose physical
+  operators directly (see `tests/golden/case_a`).
+- `AS_OF DATETIME` is reserved (`CDB-6021`) until per-row commit
+  timestamps land.
+- `repl` is not part of the v0.1.0 CLI; it lands alongside the docs in
+  v0.2.0.
+
+### Next milestones
+
+The Rust-core port (`caracal-core` crate) begins after v0.1.0, keeping the
+Python public API intact via `maturin`.

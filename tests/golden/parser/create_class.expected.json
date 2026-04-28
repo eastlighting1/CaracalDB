@@ -1,0 +1,56 @@
+{
+  "node": "Program",
+  "statements": [
+    {
+      "node": "DdlStmt",
+      "op": "create_class",
+      "target": {
+        "node": "QName",
+        "value": "bio:Gene"
+      },
+      "payload": {
+        "subclasses_of": [
+          {
+            "node": "QName",
+            "value": "bio:BiologicalEntity"
+          }
+        ],
+        "properties": [
+          {
+            "name": {
+              "node": "Ident",
+              "name": "symbol",
+              "escaped": false
+            },
+            "type": {
+              "node": "TypeRef",
+              "name": "STRING"
+            },
+            "constraints": [
+              "REQUIRED",
+              "UNIQUE"
+            ]
+          },
+          {
+            "name": {
+              "node": "Ident",
+              "name": "embedding",
+              "escaped": false
+            },
+            "type": {
+              "node": "TypeRef",
+              "name": "VECTOR",
+              "params": [
+                {
+                  "node": "TypeRef",
+                  "name": "F32"
+                },
+                768
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

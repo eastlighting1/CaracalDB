@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            .python-version
+            pyproject.toml
+            hatch.toml
+            uv.lock
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install flatc on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatbuffers-compiler
+
+      - name: Install flatc on macOS
+        if: runner.os == 'macOS'
+        run: brew install flatbuffers
+
+      - name: Install flatc on Windows
+        if: runner.os == 'Windows'
+        run: choco install flatbuffers -y --no-progress
+
+      - name: Verify flatc
+        run: flatc --version
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra io
+
+      - name: Import smoke test
+        run: uv run python -c "import caracaldb; print(caracaldb.__version__)"
+
+      - name: Ruff
+        run: uv run ruff check caracaldb tests
+
+      - name: Black
+        run: uv run black --check caracaldb tests
+
+      - name: Mypy
+        run: uv run mypy caracaldb
+
+      - name: Pytest
+        run: uv run pytest -x -q

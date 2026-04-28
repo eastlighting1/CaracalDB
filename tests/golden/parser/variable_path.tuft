@@ -1,0 +1,2 @@
+MATCH p = (a:Gene)-[:interactsWith*1..3]-(b:Gene)
+RETURN b.symbol, length(p) AS hops;
