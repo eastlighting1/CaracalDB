@@ -20,7 +20,7 @@ from caracaldb.observability import explain_logical, render_explain
 from caracaldb.plan.cost import CatalogStats
 from caracaldb.plan.logical import LNodeScan
 from caracaldb.storage import create_bundle, open_bundle
-from caracaldb.storage.pack import is_packed, pack_bundle, unpack_bundle
+from caracaldb.storage.pack import pack_bundle, unpack_bundle
 
 app = typer.Typer(
     add_completion=False,
@@ -40,7 +40,9 @@ def init(path: Path) -> None:
 def run(
     bundle_path: Path = typer.Argument(..., help="Path to a `.crcl` bundle"),  # noqa: B008
     query_file: Path = typer.Option(None, "-f", "--file", help="Query file"),  # noqa: B008
-    output: Path = typer.Option(None, "-o", "--output", help="Optional JSON output path"),  # noqa: B008
+    output: Path = typer.Option(  # noqa: B008
+        None, "-o", "--output", help="Optional JSON output path"
+    ),
 ) -> None:
     """Run a Tuft query against an existing bundle."""
     rc = cmd_run(bundle_path, query_file, output)
@@ -68,9 +70,13 @@ def bench(
 
 @app.command()
 def pack(
-    bundle_path: Path = typer.Argument(..., help="Path to a `.crcl` directory bundle"),  # noqa: B008
+    bundle_path: Path = typer.Argument(  # noqa: B008
+        ..., help="Path to a `.crcl` directory bundle"
+    ),
     output: Path = typer.Option(None, "-o", "--output", help="Output file path"),  # noqa: B008
-    codec: str = typer.Option("deflate", "--codec", help="Compression codec: deflate | stored"),  # noqa: B008
+    codec: str = typer.Option(  # noqa: B008
+        "deflate", "--codec", help="Compression codec: deflate | stored"
+    ),
 ) -> None:
     """Package a `.crcl` directory bundle into a single file."""
     rc = cmd_pack(bundle_path, output, codec)
@@ -181,4 +187,13 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["app", "cmd_bench", "cmd_explain", "cmd_init", "cmd_pack", "cmd_run", "cmd_unpack", "main"]
+__all__ = [
+    "app",
+    "cmd_bench",
+    "cmd_explain",
+    "cmd_init",
+    "cmd_pack",
+    "cmd_run",
+    "cmd_unpack",
+    "main",
+]

@@ -10,13 +10,12 @@ mistranslation.
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-import shutil
-import tempfile
 
 import pyarrow as pa
 
@@ -24,13 +23,8 @@ from caracaldb.exec.expr import compile_expr
 from caracaldb.exec.operator import ExecCtx, run_pipeline
 from caracaldb.exec.operators import FilterOperator, NodeScanOperator, ProjectOperator
 from caracaldb.lang.diagnostics import CaracalError
-from caracaldb.lang.tuft import (
-    ast as ta,
-)
-from caracaldb.lang.tuft import (
-    bind_program,
-    parse_tuft,
-)
+from caracaldb.lang.tuft import ast as ta
+from caracaldb.lang.tuft import bind_program, parse_tuft
 from caracaldb.onto.catalog import Catalog, ClassDef, load_catalog
 from caracaldb.storage import Bundle, create_bundle, open_bundle
 from caracaldb.storage.node_store import NodeStore, list_node_stores, open_node_store
@@ -227,10 +221,7 @@ def connect(path: str | Path, *, mode: str = "rw", format: str = "auto") -> Data
 
 def _connect_bundle(normalized: Path, *, mode: str) -> Database:
     """Open or create a plain directory bundle (legacy behaviour)."""
-    if normalized.exists():
-        bundle = open_bundle(normalized)
-    else:
-        bundle = create_bundle(normalized)
+    bundle = open_bundle(normalized) if normalized.exists() else create_bundle(normalized)
     catalog = load_catalog(bundle)
     return Database(bundle, catalog, _mode=mode)
 
@@ -246,7 +237,8 @@ def _connect_packed(packed_file: Path, *, mode: str) -> Database:
     bundle = open_bundle(bundle_dir)
     catalog = load_catalog(bundle)
     return Database(
-        bundle, catalog,
+        bundle,
+        catalog,
         _packed_source=packed_file,
         _working_dir=working_dir,
         _mode=mode,
@@ -260,7 +252,8 @@ def _connect_new_packed(packed_file: Path, *, mode: str) -> Database:
     bundle = create_bundle(bundle_dir)
     catalog = load_catalog(bundle)
     return Database(
-        bundle, catalog,
+        bundle,
+        catalog,
         _packed_source=packed_file,
         _working_dir=working_dir,
         _mode=mode,

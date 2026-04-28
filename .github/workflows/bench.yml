@@ -1,9 +1,13 @@
 name: Bench
 
 on:
+  push:
+    branches: [main]
   pull_request:
-  schedule:
-    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   bench:

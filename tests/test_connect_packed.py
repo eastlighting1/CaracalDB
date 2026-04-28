@@ -68,7 +68,7 @@ def test_packed_roundtrip_preserves_data(tmp_path: Path) -> None:
 def test_context_manager_repacks_on_exit(tmp_path: Path) -> None:
     packed_path = tmp_path / "ctx.crcl"
 
-    with cdb.connect(tmp_path / "ctx") as db:
+    with cdb.connect(tmp_path / "ctx"):
         # During the context, the packed file does not yet exist
         # (it's being worked on in a temp dir).
         assert not packed_path.is_file()

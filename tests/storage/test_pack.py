@@ -9,7 +9,6 @@ from caracaldb.storage import Manifest, create_bundle, open_bundle
 from caracaldb.storage.bundle import BUNDLE_DIRS
 from caracaldb.storage.pack import is_packed, pack_bundle, unpack_bundle
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

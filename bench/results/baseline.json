@@ -1,0 +1,26 @@
+[
+  {
+    "scenario": "1hop",
+    "metric": "ms",
+    "value": 1000.0,
+    "n": 10000
+  },
+  {
+    "scenario": "2hop",
+    "metric": "ms",
+    "value": 1000.0,
+    "n": 10000
+  },
+  {
+    "scenario": "knn",
+    "metric": "ms",
+    "value": 1000.0,
+    "n": 2000
+  },
+  {
+    "scenario": "neighbor_sample",
+    "metric": "ms",
+    "value": 1000.0,
+    "n": 10000
+  }
+]
