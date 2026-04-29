@@ -60,3 +60,26 @@ def test_unknown_class_raises(tmp_path: Path) -> None:
     with pytest.raises(CaracalError) as exc:
         conn.sql("MATCH (x:Unknown) RETURN x.foo").arrow()
     assert exc.value.code in {"CDB-6021", "TF-3004"}
+
+
+def test_database_convenience_api_inserts_and_queries_packed(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "quick") as db:
+        db.define_class("Gene")
+        db.insert_nodes("Gene", [{"symbol": "TP53", "chromosome": "17"}])
+
+        result = db.sql("MATCH (g:Gene) RETURN g.symbol")
+
+    assert result.rows() == [{"symbol": "TP53"}]
+    assert (tmp_path / "quick.crcl").is_file()
+
+
+def test_database_exec_supports_quickstart_shape(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "exec") as db:
+        db.exec("""
+            CREATE CLASS Gene;
+            INSERT Gene { symbol: 'TP53', chromosome: '17' };
+            """)
+
+        rows = db.sql("MATCH (g:Gene) RETURN g.symbol").rows()
+
+    assert rows == [{"symbol": "TP53"}]

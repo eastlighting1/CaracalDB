@@ -7,39 +7,23 @@ engine_status: python-reference; rust-engine-planned
 
 # Quickstart
 
-This page is the shortest path from an empty environment to a CaracalDB query result. It is intentionally small: one database handle, one query shape, one Arrow table.
+This page is the shortest path from an empty environment to a CaracalDB query result. It is intentionally small: one database handle, one class, one row, one query.
 
 ## Goal
 
-Open or create a `.crcl` database, run the current MVP Tuft query shape, and return a `pyarrow.Table`.
+Open or create a packed `.crcl` database, insert one node, run the current MVP Tuft query shape, and return Python rows.
 
 ## Minimal Query
 
 ```python
-import pyarrow as pa
 import caracaldb as cdb
-from caracaldb.onto.catalog import Catalog, save_catalog
-from caracaldb.storage import create_bundle
-from caracaldb.storage.node_store import open_node_store
 
-bundle = create_bundle("demo", exist_ok=True)
-catalog = Catalog.empty()
-catalog.register_class(iri="http://example.org/Gene", local_name="Gene")
-save_catalog(bundle, catalog)
+with cdb.connect("demo") as db:
+    db.define_class("Gene")
+    db.insert_nodes("Gene", [{"symbol": "TP53", "chromosome": "17"}])
 
-store = open_node_store(
-    bundle,
-    class_iri="http://example.org/Gene",
-    local_name="Gene",
-    create=True,
-)
-store.append(
-    pa.record_batch({"symbol": pa.array(["TP53"]), "chromosome": pa.array(["17"])})
-)
-
-with cdb.connect(bundle.path, format="bundle") as db:
-    table = db.cursor().sql("MATCH (g:Gene) RETURN g.symbol").arrow()
-    print(table.to_pylist())
+    rows = db.sql("MATCH (g:Gene) RETURN g.symbol").rows()
+    print(rows)
 ```
 The query surface in v0.1.x supports a single node pattern with `WHERE`, `RETURN`, and `LIMIT`. Broader Tuft examples live in the language reference as the public API catches up with the planner.
 

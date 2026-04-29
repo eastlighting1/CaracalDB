@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,7 +25,7 @@ from caracaldb.exec.operators import FilterOperator, NodeScanOperator, ProjectOp
 from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.lang.tuft import ast as ta
 from caracaldb.lang.tuft import bind_program, parse_tuft
-from caracaldb.onto.catalog import Catalog, ClassDef, load_catalog
+from caracaldb.onto.catalog import Catalog, ClassDef, load_catalog, save_catalog
 from caracaldb.storage import Bundle, create_bundle, open_bundle
 from caracaldb.storage.node_store import NodeStore, list_node_stores, open_node_store
 from caracaldb.storage.pack import is_packed, pack_bundle
@@ -48,6 +48,9 @@ class Result:
         if not self._batches:
             return pa.table({})
         return pa.Table.from_batches(self._batches)
+
+    def rows(self) -> list[dict[str, Any]]:
+        return self.arrow().to_pylist()
 
     def record_batches(self) -> Iterator[pa.RecordBatch]:
         return iter(self._batches)
@@ -139,6 +142,58 @@ class Database:
 
     def cursor(self) -> Connection:
         return Connection(self)
+
+    def sql(self, text: str, *, params: dict[str, Any] | None = None) -> Result:
+        return self.cursor().sql(text, params=params)
+
+    def define_class(self, name: str, *, iri: str | None = None) -> ClassDef:
+        class_iri = iri or f"http://example.org/{name}"
+        existing = self._catalog.class_by_iri(class_iri)
+        if existing is not None:
+            return existing
+        for candidate in self._catalog.classes:
+            if (candidate.local_name or _local(candidate.iri)) == name:
+                return candidate
+        cls = self._catalog.register_class(iri=class_iri, local_name=name)
+        save_catalog(self._bundle, self._catalog)
+        return cls
+
+    def insert_nodes(
+        self,
+        class_name: str,
+        rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+    ) -> Any:
+        payload = [dict(rows)] if isinstance(rows, Mapping) else [dict(row) for row in rows]
+        if not payload:
+            raise CaracalError(code="CDB-7011", message="cannot insert an empty node batch")
+
+        cls = self._find_class(class_name)
+        store = open_node_store(
+            self._bundle,
+            class_iri=cls.iri,
+            local_name=cls.local_name or _local(cls.iri),
+            create=True,
+        )
+        return store.append(pa.Table.from_pylist(payload))
+
+    def exec(self, text: str) -> None:
+        for statement in _split_exec_statements(text):
+            upper = statement.upper()
+            if upper.startswith("CREATE CLASS "):
+                name = statement[len("CREATE CLASS ") :].strip()
+                self.define_class(name)
+                continue
+            if upper.startswith("INSERT "):
+                class_name, row = _parse_insert_statement(statement)
+                self.insert_nodes(class_name, row)
+                continue
+            raise CaracalError(
+                code="CDB-6020",
+                message=(
+                    "db.exec() currently supports CREATE CLASS name and "
+                    "INSERT name { field: value }"
+                ),
+            )
 
     def close(self) -> None:
         """Close the database.
@@ -288,6 +343,51 @@ def _connect_new_packed(packed_file: Path, *, mode: str) -> Database:
         _working_dir=working_dir,
         _mode=mode,
     )
+
+
+def _split_exec_statements(text: str) -> list[str]:
+    return [part.strip() for part in text.split(";") if part.strip()]
+
+
+def _parse_insert_statement(statement: str) -> tuple[str, dict[str, object]]:
+    rest = statement[len("INSERT ") :].strip()
+    brace = rest.find("{")
+    if brace < 0 or not rest.endswith("}"):
+        raise CaracalError(
+            code="CDB-6020",
+            message="INSERT requires the shape: INSERT Class { field: value }",
+        )
+    class_name = rest[:brace].strip()
+    body = rest[brace + 1 : -1].strip()
+    if not class_name or not body:
+        raise CaracalError(
+            code="CDB-6020", message="INSERT requires a class and at least one field"
+        )
+    row: dict[str, object] = {}
+    for item in body.split(","):
+        if ":" not in item:
+            raise CaracalError(code="CDB-6020", message=f"invalid INSERT field: {item.strip()!r}")
+        key, value = item.split(":", 1)
+        row[key.strip()] = _parse_exec_literal(value.strip())
+    return class_name, row
+
+
+def _parse_exec_literal(value: str) -> object:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
 
 
 # ---------------------------------------------------------------------------
