@@ -47,6 +47,5 @@ import caracaldb as cdb
 with cdb.connect("demo") as db:
     print(db.bundle.path)
 ```
-## Common Misconception
-
-The `.crcl` suffix does not always mean the same physical shape. Check whether a path is a directory bundle or a packed file before writing tooling that inspects it directly.
+!!! note "Common misconception"
+    The `.crcl` suffix does not always mean the same physical shape. Check whether a path is a directory bundle or a packed file before writing tooling that inspects it directly.
