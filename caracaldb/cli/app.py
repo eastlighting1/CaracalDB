@@ -25,7 +25,7 @@ from caracaldb.storage.pack import pack_bundle, unpack_bundle
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
-    help="caracal — embedded GraphDB CLI",
+    help="caracal - embedded GraphDB CLI",
 )
 
 

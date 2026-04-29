@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-04-29
+
+Patch release for the documentation cleanup and release pipeline.
+
+### Changed
+
+- Added GitHub Pages deployment for the MkDocs site.
+- Fixed malformed Markdown code fences across public docs.
+- Strengthened documentation code-block validation so malformed closing
+  fences fail CI.
+- Decoupled public milestone documentation from untracked internal
+  milestone gate reports.
+- Added generated error-index hints from the diagnostics table.
+- Expanded implementation-status notes for experimental guides.
+
 ## [0.1.0] — 2026-04-27
 
 The first public release of **CaracalDB** — an embedded, ontology-leaning,

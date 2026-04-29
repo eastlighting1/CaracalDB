@@ -1,6 +1,6 @@
 """Release artifact smoke tests.
 
-Confirms the package metadata is in shape for the v0.1.0 release. We do
+Confirms the package metadata is in shape for the current release. We do
 not exercise ``hatch build`` from inside pytest — wheel building is a CI
 job and depends on hatch being installed; the tests here only check the
 declarative state that Hatch reads.
@@ -13,22 +13,23 @@ from pathlib import Path
 import caracaldb
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+RELEASE_VERSION = caracaldb.__version__
 
 
-def test_version_is_v010() -> None:
-    assert caracaldb.__version__ == "0.1.0"
+def test_version_is_current_release() -> None:
+    assert RELEASE_VERSION == "0.1.1"
 
 
 def test_changelog_contains_release_section() -> None:
     text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert "[0.1.0]" in text
-    assert "M5 milestone" in text
+    assert f"[{RELEASE_VERSION}]" in text
+    assert "documentation cleanup" in text
 
 
 def test_release_notes_exist() -> None:
-    notes = REPO_ROOT / "docs" / "release" / "v0.1.0.md"
+    notes = REPO_ROOT / "docs" / "release" / f"v{RELEASE_VERSION}.md"
     body = notes.read_text(encoding="utf-8")
-    assert "v0.1.0" in body
+    assert f"v{RELEASE_VERSION}" in body
     assert "uv pip install" in body
 
 
