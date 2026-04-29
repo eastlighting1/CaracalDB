@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-04-29
+
+Patch release for focused ontology class-closure queries.
+
+### Added
+
+- Added `Database.define_class(..., superclass_iris=...)` so public examples
+  can register class hierarchy metadata without lower-level catalog wiring.
+- Wired the focused `alias.class SUBCLASSOF* <IRI>` Tuft predicate into the
+  public `db.sql()` MVP path through the existing closure scan operator.
+- Added regression tests for `SUBCLASSOF*` queries with and without additional
+  `AND` filters.
+
+### Changed
+
+- Updated ontology docs and the 30-Minute Tour to show the now-executable
+  class-closure path while keeping broader reasoning surfaces marked
+  experimental.
+
 ## [0.1.2] - 2026-04-29
 
 Patch release for the beginner-facing API and release gates.

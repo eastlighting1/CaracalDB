@@ -10,7 +10,7 @@ engine_status: python-reference; rust-engine-planned
 Use this guide when you need class or property hierarchy to affect graph queries. The v0.1.x documentation describes the workflow and syntax contract; execution support should be checked against the API page for your installed version.
 
 !!! warning "Experimental surface"
-    Catalog registration is available in the Python reference implementation, but hierarchy-aware Tuft execution and materialized closure are not yet stable public query features in v0.1.x. Treat the Tuft examples below as the intended contract unless your installed version documents support.
+    The Python reference implementation supports the focused `alias.class SUBCLASSOF* <IRI>` query shape for class hierarchy reads. Property hierarchy, richer ontology rules, and explicit `INFER CLOSURE` materialization remain experimental.
 
 ## Problem
 
@@ -28,6 +28,7 @@ with cdb.connect("bio") as db:
     db.define_class(
         "ProteinCodingGene",
         iri="http://example.org/ProteinCodingGene",
+        superclass_iris=("http://example.org/Gene",),
     )
 ```
 
@@ -46,23 +47,23 @@ catalog.register_class(
 ```
 This lower-level catalog object is not automatically attached to an already-open database handle. Use the database API for runnable inserts and queries, and persist catalog metadata explicitly when writing internal tooling.
 
-3. Use hierarchy-aware Tuft syntax when expressing the future query intent.
+3. Use hierarchy-aware Tuft syntax for class closure reads.
 
 ```tuft
 MATCH (g:ProteinCodingGene)
 WHERE g.class SUBCLASSOF* <http://example.org/Gene>
 RETURN g.symbol
 ```
-4. Materialize closure when the graph needs reusable hierarchy lookup.
+4. Materialize closure when the graph needs reusable hierarchy lookup. This syntax is reserved for the broader reasoning surface and is not part of the focused v0.1.x `db.sql()` path yet.
 
 ```tuft
 INFER CLOSURE (SUBCLASSOF) ON GRAPH biomedical
 ```
 ## Verification
 
-Reasoning will be correct when a query for a parent class includes direct instances and instances of transitive child classes, while still preserving the original class identity for downstream analysis.
+Reasoning is correct when a query for a class includes rows whose runtime class satisfies the requested superclass closure, while still preserving the original class identity for downstream analysis.
 
-For the current Python reference path, verify the executable part first: define the class with `db.define_class`, insert rows with `db.insert_nodes`, and query the exact class label with `db.sql("MATCH (g:Gene) RETURN g.symbol")`. Then verify ontology metadata separately by loading the saved catalog, confirming each class IRI is present, and checking that superclass IRIs point at registered classes.
+For the current Python reference path, verify the executable part first: define the class with `db.define_class(..., superclass_iris=(...))`, insert rows with `db.insert_nodes`, and query with `db.sql("MATCH (g:ProteinCodingGene) WHERE g.class SUBCLASSOF* <http://example.org/Gene> RETURN g.symbol")`. Then verify lower-level ontology metadata separately by loading the saved catalog, confirming each class IRI is present, and checking that superclass IRIs point at registered classes.
 
 ## Common Pitfalls
 

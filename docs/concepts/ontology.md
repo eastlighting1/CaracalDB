@@ -10,7 +10,7 @@ engine_status: python-reference; rust-engine-planned
 CaracalDB uses ontology metadata to keep graph names meaningful. Classes and properties are not just labels; they can participate in hierarchy, domain, range, and closure rules that make query behavior more predictable across datasets.
 
 !!! warning "Current v0.1.x scope"
-    The public Python API can register classes and attach stable IRIs today. Hierarchy closure queries such as `SUBCLASSOF*` are a planned ontology-aware query surface, not a runnable v0.1.x `db.sql()` example.
+    The public Python API can register classes, attach stable IRIs, and run the focused `alias.class SUBCLASSOF* <IRI>` query shape. Broader ontology reasoning, property closure, and `INFER CLOSURE` materialization remain experimental.
 
 ## Mental Model
 
@@ -47,10 +47,11 @@ with cdb.connect("ontology-demo") as db:
     db.define_class(
         "ProteinCodingGene",
         iri="http://example.org/ProteinCodingGene",
+        superclass_iris=("http://example.org/Gene",),
     )
 ```
 
-The lower-level catalog stores the hierarchy metadata that future reasoning paths will consume:
+The lower-level catalog stores the hierarchy metadata that closure-aware reads consume:
 
 ```python
 from caracaldb.onto.catalog import Catalog
@@ -63,18 +64,18 @@ catalog.register_class(
     superclass_iris=("http://example.org/Gene",),
 )
 ```
-The superclass link is data, not prose. That lets documentation, validation, query binding, and future closure indexes read from the same model.
+The superclass link is data, not prose. That lets documentation, validation, query binding, and closure indexes read from the same model.
 
 ## Query Shape
 
-Tuft reserves hierarchy predicates for ontology-aware reads. This is the intended contract for closure-aware execution, not the current MVP query path:
+Tuft supports the focused class hierarchy predicate in the current MVP query path:
 
 ```tuft
 MATCH (g:ProteinCodingGene)
 WHERE g.class SUBCLASSOF* <http://example.org/Gene>
 RETURN g.symbol
 ```
-The `*` means transitive closure: direct subclasses and indirect subclasses should both match once closure execution is available.
+The `*` means transitive closure: direct subclasses and indirect subclasses can both match the requested superclass.
 
 !!! note "Common misconception"
     Ontology support is not the same thing as importing every OWL feature. CaracalDB focuses on the subset that can be made explicit, testable, and useful for graph queries and ML pipelines.

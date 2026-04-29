@@ -83,3 +83,54 @@ def test_database_exec_supports_quickstart_shape(tmp_path: Path) -> None:
         rows = db.sql("MATCH (g:Gene) RETURN g.symbol").rows()
 
     assert rows == [{"symbol": "TP53"}]
+
+
+def test_database_sql_supports_subclassof_star(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "ontology") as db:
+        db.define_class("Gene", iri="http://example.org/Gene")
+        db.define_class(
+            "ProteinCodingGene",
+            iri="http://example.org/ProteinCodingGene",
+            superclass_iris=("http://example.org/Gene",),
+        )
+        db.insert_nodes(
+            "ProteinCodingGene",
+            [
+                {"symbol": "TP53", "chromosome": "17"},
+                {"symbol": "BRCA1", "chromosome": "17"},
+            ],
+        )
+
+        rows = db.sql("""
+            MATCH (g:ProteinCodingGene)
+            WHERE g.class SUBCLASSOF* <http://example.org/Gene>
+            RETURN g.symbol
+            """).rows()
+
+    assert rows == [{"symbol": "TP53"}, {"symbol": "BRCA1"}]
+
+
+def test_database_sql_subclassof_star_allows_additional_filters(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "ontology-filter") as db:
+        db.define_class("Gene", iri="http://example.org/Gene")
+        db.define_class(
+            "ProteinCodingGene",
+            iri="http://example.org/ProteinCodingGene",
+            superclass_iris=("http://example.org/Gene",),
+        )
+        db.insert_nodes(
+            "ProteinCodingGene",
+            [
+                {"symbol": "TP53", "chromosome": "17"},
+                {"symbol": "EGFR", "chromosome": "7"},
+            ],
+        )
+
+        rows = db.sql("""
+            MATCH (g:ProteinCodingGene)
+            WHERE g.class SUBCLASSOF* <http://example.org/Gene>
+              AND g.chromosome = '17'
+            RETURN g.symbol
+            """).rows()
+
+    assert rows == [{"symbol": "TP53"}]

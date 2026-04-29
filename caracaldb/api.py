@@ -20,12 +20,18 @@ from typing import Any
 import pyarrow as pa
 
 from caracaldb.exec.expr import compile_expr
-from caracaldb.exec.operator import ExecCtx, run_pipeline
-from caracaldb.exec.operators import FilterOperator, NodeScanOperator, ProjectOperator
+from caracaldb.exec.operator import ExecCtx, PhysicalOperator, run_pipeline
+from caracaldb.exec.operators import (
+    ClosureScanOperator,
+    FilterOperator,
+    NodeScanOperator,
+    ProjectOperator,
+)
 from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.lang.tuft import ast as ta
 from caracaldb.lang.tuft import bind_program, parse_tuft
 from caracaldb.onto.catalog import Catalog, ClassDef, load_catalog, save_catalog
+from caracaldb.onto.closure import ClassClosureIndex
 from caracaldb.storage import Bundle, create_bundle, open_bundle
 from caracaldb.storage.node_store import NodeStore, list_node_stores, open_node_store
 from caracaldb.storage.pack import is_packed, pack_bundle
@@ -146,7 +152,13 @@ class Database:
     def sql(self, text: str, *, params: dict[str, Any] | None = None) -> Result:
         return self.cursor().sql(text, params=params)
 
-    def define_class(self, name: str, *, iri: str | None = None) -> ClassDef:
+    def define_class(
+        self,
+        name: str,
+        *,
+        iri: str | None = None,
+        superclass_iris: tuple[str, ...] = (),
+    ) -> ClassDef:
         class_iri = iri or f"http://example.org/{name}"
         existing = self._catalog.class_by_iri(class_iri)
         if existing is not None:
@@ -154,7 +166,11 @@ class Database:
         for candidate in self._catalog.classes:
             if (candidate.local_name or _local(candidate.iri)) == name:
                 return candidate
-        cls = self._catalog.register_class(iri=class_iri, local_name=name)
+        cls = self._catalog.register_class(
+            iri=class_iri,
+            local_name=name,
+            superclass_iris=tuple(superclass_iris),
+        )
         save_catalog(self._bundle, self._catalog)
         return cls
 
@@ -404,6 +420,7 @@ class _CompiledQuery:
     predicate: object | None
     projections: tuple[tuple[object, str], ...]
     limit: int | None
+    closure_base_iri: str | None = None
 
 
 def _compile_query(query: ta.Query, db: Database) -> _CompiledQuery:
@@ -429,8 +446,15 @@ def _compile_query(query: ta.Query, db: Database) -> _CompiledQuery:
     alias = elem.var.name if elem.var is not None else "n"
 
     predicate: object | None = None
+    closure_base_iri: str | None = None
     if where_clause is not None and where_clause.predicate is not None:
-        predicate = _translate_expr(where_clause.predicate, alias)
+        closure_base_iri, remaining = _extract_subclassof_predicate(
+            where_clause.predicate,
+            alias,
+            query,
+        )
+        if remaining is not None:
+            predicate = _translate_expr(remaining, alias)
 
     projections: list[tuple[object, str]] = []
     for proj in return_clause.projections:
@@ -457,6 +481,7 @@ def _compile_query(query: ta.Query, db: Database) -> _CompiledQuery:
         predicate=predicate,
         projections=tuple(projections),
         limit=limit,
+        closure_base_iri=closure_base_iri,
     )
 
 
@@ -520,6 +545,55 @@ def _translate_expr(expr: ta.Expr | None, alias: str) -> object:
     )
 
 
+def _extract_subclassof_predicate(
+    expr: ta.Expr,
+    alias: str,
+    query: ta.Query,
+) -> tuple[str | None, ta.Expr | None]:
+    if isinstance(expr, ta.BinOp) and expr.op.lower() == "and":
+        left_base, left_remaining = _extract_subclassof_predicate(expr.left, alias, query)
+        right_base, right_remaining = _extract_subclassof_predicate(expr.right, alias, query)
+        if left_base is not None and right_base is not None:
+            raise CaracalError(
+                code="CDB-6020",
+                message="only one SUBCLASSOF* predicate is supported in a query",
+            )
+        base = left_base or right_base
+        remaining_parts = [item for item in (left_remaining, right_remaining) if item is not None]
+        if not remaining_parts:
+            return base, None
+        if len(remaining_parts) == 1:
+            return base, remaining_parts[0]
+        return base, ta.BinOp(op="AND", left=remaining_parts[0], right=remaining_parts[1])
+
+    if isinstance(expr, ta.BinOp) and expr.op == "SUBCLASSOF*":
+        if not _is_alias_class_path(expr.left, alias):
+            raise CaracalError(
+                code="CDB-6020",
+                message="SUBCLASSOF* currently requires the left operand to be alias.class",
+            )
+        if isinstance(expr.right, ta.Iri):
+            return expr.right.value, None
+        if isinstance(expr.right, ta.QName):
+            return _expand(expr.right, query), None
+        raise CaracalError(
+            code="CDB-6020",
+            message="SUBCLASSOF* currently requires an IRI or qualified class name on the right",
+        )
+
+    return None, expr
+
+
+def _is_alias_class_path(expr: ta.Expr | None, alias: str) -> bool:
+    return (
+        isinstance(expr, ta.PathExpr)
+        and expr.root is not None
+        and expr.root.name == alias
+        and len(expr.steps) == 1
+        and expr.steps[0].name == "class"
+    )
+
+
 _BIN_OP_TO_TUPLE: dict[str, str] = {
     "=": "eq",
     "==": "eq",
@@ -572,20 +646,38 @@ def _default_alias(expr: ta.Expr, alias: str) -> str:
 
 def _build_pipeline(plan: _CompiledQuery, db: Database) -> Any:
     # Make sure the underlying class exists on disk.
-    if plan.local_name not in list_node_stores(db.bundle):
+    if plan.closure_base_iri is not None:
+        closure = ClassClosureIndex.from_catalog(db.catalog)
+        if not closure.is_subclass(plan.class_iri, plan.closure_base_iri):
+            return _EmptyOperator()
+        op: Any = ClosureScanOperator(
+            db.bundle,
+            closure,
+            base_iri=plan.class_iri,
+            columns=list(plan.columns),
+        )
+    elif plan.local_name not in list_node_stores(db.bundle):
         raise CaracalError(
             code="CDB-6023",
             message=f"node store missing for class {plan.class_iri!r} (local={plan.local_name!r})",
         )
-    store = open_node_store(db.bundle, class_iri=plan.class_iri, local_name=plan.local_name)
+    else:
+        store = open_node_store(db.bundle, class_iri=plan.class_iri, local_name=plan.local_name)
+        column_request = list(plan.columns)
+        op = NodeScanOperator(store, columns=column_request)
 
-    column_request = list(plan.columns)
-    op: Any = NodeScanOperator(store, columns=column_request)
     if plan.predicate is not None:
         op = FilterOperator(op, compile_expr(plan.predicate))
     if plan.projections:
         op = ProjectOperator(op, [(compile_expr(e), name) for e, name in plan.projections])
     return op
+
+
+class _EmptyOperator(PhysicalOperator):
+    name = "Empty"
+
+    def _next_batch(self) -> pa.RecordBatch | None:
+        return None
 
 
 def _apply_limit(batches: list[pa.RecordBatch], limit: int) -> list[pa.RecordBatch]:

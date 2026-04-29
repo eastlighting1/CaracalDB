@@ -77,10 +77,11 @@ Ontology metadata makes class names durable and explainable. In v0.1.x, the exec
 db.define_class(
     "ProteinCodingGene",
     iri="http://example.org/ProteinCodingGene",
+    superclass_iris=("http://example.org/Gene",),
 )
 ```
 
-Superclass closure is still an experimental surface in v0.1.x. `SUBCLASSOF*` examples in the ontology guide describe the intended query contract, not a query you should paste into the current `db.sql()` path.
+The focused `SUBCLASSOF*` class closure predicate is available in the v0.1.x query path. Broader reasoning features such as property closure and explicit `INFER CLOSURE` materialization are still experimental.
 
 ## 6. Think In Snapshots
 
