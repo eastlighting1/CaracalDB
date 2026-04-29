@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-04-29
+
+Patch release for the beginner-facing API and release gates.
+
+### Added
+
+- Added `Database.define_class`, `Database.insert_nodes`, `Database.sql`,
+  `Database.exec`, and `Result.rows` as small public convenience APIs for
+  Quickstart-scale examples.
+- Reworked the Quickstart minimal query so it no longer exposes PyArrow or
+  internal node-store wiring.
+
+### Changed
+
+- Relaxed benchmark regression tolerance in release and manual benchmark
+  workflows to reduce runner-noise failures.
+- Kept packed `.crcl` as the default `connect()` path in public docs.
+
 ## [0.1.1] - 2026-04-29
 
 Patch release for the documentation cleanup and release pipeline.
