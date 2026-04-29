@@ -1,7 +1,7 @@
 ---
-applies_to: v0.1.x
+applies_to: v0.2.x
 status: experimental
-last_updated: 2026-04-28
+last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
@@ -12,6 +12,8 @@ PyG and DGL integration turns a CaracalDB subgraph into tensors while keeping Ca
 ## Problem
 
 GNN training needs compact node features, edge indices, labels, and train/validation/test masks. Production graph data usually needs ontology filters, temporal snapshots, and schema-aware extraction before it is ready for a training loop.
+
+For simple typed graph datasets, IRIs are not required. A node table with `node_id`, `type`, and feature columns plus an edge table with `src`, `dst`, and `type` is enough to establish the graph shape; CaracalDB can keep compact internal ids for adjacency while preserving `node_id` for labels and joins. The same applies when data starts as Neo4j-style JSON or triples: ingest normalizes it first, then ML export can read compact ids and stable external ids from the same graph.
 
 ## Shape
 
@@ -33,7 +35,7 @@ The planned adapter surface centers on `Subgraph` exports:
 
 ## Verification
 
-Check row counts before tensor conversion, verify that every edge endpoint exists in the exported node table, and run one mini-batch through the model loader before launching a full training job.
+Check row counts before tensor conversion, verify that every edge endpoint exists in the exported node table, confirm `node_id` survives as the stable external id, and run one mini-batch through the model loader before launching a full training job.
 
 ## Common Pitfalls
 

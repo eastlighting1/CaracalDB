@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-04-30
+
+Minor release for flexible graph/resource ingest.
+
+### Added
+
+- Added `Database.insert_triples(...)` for RDF-like subject/predicate/object
+  input that maps `rdf:type` to classes, literal objects to properties, and
+  resource objects to edges.
+- Added `Database.import_resource(...)` and `Database.import_resources(...)`
+  with shape detection for Neo4j-style JSON objects, IRI resources, triples,
+  typed node rows, and typed edge rows.
+- Added `Database.resource(...)` and `ResourceRef` so user-facing resource ids
+  can resolve to CaracalDB internal ids and `caracaldb://resource/...` display
+  IRIs.
+- Added `Database.export_resource_turtle(...)` for explicit Turtle-style
+  resource display without treating ontology IRIs as web pages.
+
+### Changed
+
+- Treat IRI as optional metadata in public ingest flows. Dataset ids such as
+  `employee/E12345` remain stable user ids, while CaracalDB assigns compact
+  internal ids for storage.
+- Updated Quickstart, Tour, and ML/interop docs to describe typed graph tables
+  and flexible resource ingest.
+
 ## [0.1.4] - 2026-04-29
 
 Patch release for idempotent ontology hierarchy updates.

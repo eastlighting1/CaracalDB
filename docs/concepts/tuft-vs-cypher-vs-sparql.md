@@ -1,7 +1,7 @@
 ---
-applies_to: v0.1.x
+applies_to: v0.2.x
 status: experimental
-last_updated: 2026-04-28
+last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
@@ -56,13 +56,13 @@ flowchart LR
 | Result shape | Arrow table or Python rows | Driver records | RDF bindings |
 | Embedded Python workflow | Primary target | Usually remote server | Usually endpoint or library |
 
-Here, ontology graph means CaracalDB's graph model: nodes and edges are queried like a property graph, while classes and properties can also carry stable IRIs and hierarchy metadata.
+Here, ontology graph means CaracalDB's graph model has two layers. In lightweight typed-graph mode, columns such as `node_id`, `type`, `src`, and `dst` are enough to load graph data for analytics or GNN work. In resource mode, Neo4j-style JSON objects, IRI resources, and raw triples normalize into the same internal nodes and edges. In ontology-enriched mode, the same classes and properties can also carry IRIs, prefixes, and hierarchy metadata.
 
 This table can make the languages look like a menu of equivalent names. They are not equivalent in CaracalDB. The important difference is where each concept lives:
 
 - In Cypher, `Gene` is normally a graph label.
 - In SPARQL, `bio:Gene` is normally an RDF class IRI.
-- In Tuft, `Gene` is a query-friendly class name backed by catalog metadata, so it can stay readable while still pointing at a stable IRI.
+- In Tuft, `Gene` is a query-friendly class name backed by catalog metadata. It may point at a stable IRI, but it does not have to for typed graph or GNN workflows.
 
 ## Similar Surface, Different Contract
 
@@ -124,9 +124,10 @@ The naming is deliberately hybrid, but the terms are not meant to hide that heri
 
 | Tuft term | Closest Cypher term | Closest SPARQL/RDF term | Why CaracalDB uses it |
 |---|---|---|---|
-| Class | Label | RDF class | A query label that can also have an IRI and superclass links |
-| Property | Property / relationship type | Predicate | One catalog concept for typed fields and graph relationships |
-| IRI | Usually external metadata | IRI | Durable identity for classes and properties |
+| Class | Label | RDF class | A query label from a type column, optionally backed by an IRI |
+| Property | Property / relationship type | Predicate | One catalog concept for fields and graph relationships, optionally backed by an IRI |
+| Resource id | Node id / element id | Subject or object IRI | Stable user id such as `employee/E12345`, rendered as `caracaldb://resource/...` when needed |
+| IRI | Usually external metadata | IRI | Optional durable identity for classes, properties, or imported resources |
 | Closure | Usually plugin or app logic | Transitive path / entailment | Explicit, bounded hierarchy expansion |
 | Arrow table | Driver result table | Binding table | Columnar result shape for embedded analytics |
 
@@ -143,4 +144,4 @@ Use Tuft when the graph lives in CaracalDB and you need more than one of these a
 Use Cypher when you are primarily targeting a property-graph server and its ecosystem. Use SPARQL when you are primarily working with RDF datasets, federation, or standards-heavy semantic-web tooling. Tuft is best when CaracalDB is the execution engine and the query should stay close to both ontology metadata and columnar computation.
 
 !!! note "Common misconception"
-    A query that looks like Cypher is not automatically Cypher-compatible. Tuft keeps familiar syntax where it helps, but its compatibility contract is the Tuft reference and specification.
+    A query that looks like Cypher is not automatically Cypher-compatible, and a class without an IRI is not incomplete. Tuft keeps familiar syntax where it helps, adds ontology metadata when you need it, and keeps typed graph data usable without forcing an RDF-style identifier model.

@@ -7,6 +7,7 @@ import caracaldb as cdb
 from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.onto.catalog import save_catalog
 from caracaldb.storage import create_bundle
+from caracaldb.storage.edge_store import list_edge_stores, open_edge_store
 from caracaldb.storage.node_store import open_node_store
 
 
@@ -156,3 +157,193 @@ def test_define_class_merges_superclass_for_existing_class(tmp_path: Path) -> No
             """).rows()
 
     assert rows == [{"symbol": "TP53"}]
+
+
+def test_insert_node_table_groups_rows_by_type_and_preserves_node_id(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "typed-nodes") as db:
+        db.insert_node_table(
+            [
+                {
+                    "node_id": 0,
+                    "type": "User",
+                    "name": "Grandmaster_Ayasha_R",
+                    "rank_points": 49908.0,
+                },
+                {
+                    "node_id": 1,
+                    "type": "User",
+                    "name": "Grandmaster_Lucas_W",
+                    "rank_points": 69138.0,
+                },
+                {
+                    "node_id": 4691,
+                    "type": "Competition",
+                    "name": "Spring Open",
+                    "rank_points": None,
+                },
+            ]
+        )
+
+        rows = db.sql("MATCH (u:User) RETURN u.node_id, u.name").rows()
+
+    assert rows == [
+        {"node_id": 0, "name": "Grandmaster_Ayasha_R"},
+        {"node_id": 1, "name": "Grandmaster_Lucas_W"},
+    ]
+
+
+def test_insert_edge_table_resolves_external_node_ids(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "typed-edges") as db:
+        db.insert_node_table(
+            [
+                {"node_id": 0, "type": "User", "name": "Grandmaster_Ayasha_R"},
+                {"node_id": 4691, "type": "Competition", "name": "Spring Open"},
+            ]
+        )
+
+        db.insert_edge_table(
+            [
+                {"src": 0, "dst": 4691, "type": "HOSTED", "weight": 1.0},
+                {"src": 0, "dst": 4691, "type": "PLAYED", "weight": 2.0},
+            ]
+        )
+
+        assert list_edge_stores(db.bundle) == ["HOSTED", "PLAYED"]
+        store = open_edge_store(
+            db.bundle,
+            property_iri="caracaldb:local:HOSTED",
+            local_name="HOSTED",
+        )
+        table = store.to_table()
+
+    assert table["src"].to_pylist() == [0]
+    assert table["dst"].to_pylist() == [1]
+    assert table["type"].to_pylist() == ["HOSTED"]
+    assert table["weight"].to_pylist() == [1.0]
+
+
+def test_insert_edge_table_rejects_unknown_external_node_id(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "typed-edge-missing") as db:
+        db.insert_node_table([{"node_id": 0, "type": "User", "name": "Grandmaster_Ayasha_R"}])
+
+        with pytest.raises(CaracalError) as exc:
+            db.insert_edge_table([{"src": 0, "dst": 999, "type": "HOSTED"}])
+
+    assert exc.value.code == "CDB-7021"
+    assert "unknown node_id" in exc.value.message
+
+
+def test_import_resource_accepts_neo4j_json_and_creates_placeholder_targets(
+    tmp_path: Path,
+) -> None:
+    with cdb.connect(tmp_path / "neo4j-resource", format="bundle") as db:
+        db.import_resource(
+            {
+                "id": "employee/E12345",
+                "labels": ["Employee"],
+                "properties": {
+                    "name": "Lukas Hoffman",
+                    "email": "lukas@company.com",
+                    "riskScore": 0.72,
+                },
+                "relationships": {
+                    "worksOn": "project/P9",
+                    "hasAccess": "system/customer-data-lake",
+                },
+            }
+        )
+
+        rows = db.sql("MATCH (e:Employee) RETURN e.name, e.riskScore").rows()
+        project = db.sql("MATCH (p:Project) RETURN p.node_id").rows()
+        ref = db.resource("employee/E12345")
+
+    assert rows == [{"name": "Lukas Hoffman", "riskScore": 0.72}]
+    assert project == [{"node_id": "project/P9"}]
+    assert sorted(list_edge_stores(db.bundle)) == ["hasAccess", "worksOn"]
+    assert ref.external_id == "employee/E12345"
+    assert ref.display_iri == "caracaldb://resource/employee/E12345"
+
+
+def test_import_resource_accepts_iri_resource_and_preserves_iri(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "iri-resource", format="bundle") as db:
+        db.import_resource(
+            {
+                "@id": "https://ontology.company.com/employee/E12345",
+                "type": "Employee",
+                "name": "Lukas Hoffman",
+            }
+        )
+
+        rows = db.sql("MATCH (e:Employee) RETURN e.node_id, e._iri, e.name").rows()
+        ref = db.resource("https://ontology.company.com/employee/E12345")
+
+    assert rows == [
+        {
+            "node_id": "https://ontology.company.com/employee/E12345",
+            "_iri": "https://ontology.company.com/employee/E12345",
+            "name": "Lukas Hoffman",
+        }
+    ]
+    assert ref.iri == "https://ontology.company.com/employee/E12345"
+
+
+def test_insert_triples_maps_type_literal_and_resource_edges(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "triples", format="bundle") as db:
+        db.insert_triples(
+            [
+                {
+                    "subject": "employee/E12345",
+                    "predicate": "rdf:type",
+                    "object": "Employee",
+                },
+                {"subject": "employee/E12345", "predicate": "name", "object": "Lukas Hoffman"},
+                {"subject": "employee/E12345", "predicate": "worksOn", "object": "project/P9"},
+            ]
+        )
+
+        rows = db.sql("MATCH (e:Employee) RETURN e.node_id, e.name").rows()
+        project = db.sql("MATCH (p:Project) RETURN p.node_id").rows()
+        store = open_edge_store(
+            db.bundle,
+            property_iri="caracaldb:local:worksOn",
+            local_name="worksOn",
+        )
+        edges = store.to_table().to_pylist()
+
+    assert rows == [{"node_id": "employee/E12345", "name": "Lukas Hoffman"}]
+    assert project == [{"node_id": "project/P9"}]
+    assert edges[0]["src"] == 0
+    assert edges[0]["dst"] == 1
+
+
+def test_import_resource_shape_detection_and_turtle_export(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "resource-export", format="bundle") as db:
+        db.define_class("Employee", iri="https://ontology.company.com/Employee")
+        db._define_property("worksOn", iri="https://ontology.company.com/worksOn")
+        db.import_resource({"node_id": "project/P9", "type": "Project", "name": "Risk Model"})
+        db.import_resource(
+            {
+                "id": "employee/E12345",
+                "labels": ["Employee"],
+                "properties": {"name": "Lukas Hoffman"},
+                "relationships": {"worksOn": "project/P9"},
+            }
+        )
+
+        turtle = db.export_resource_turtle("employee/E12345")
+
+    assert "<caracaldb://resource/employee/E12345>" in turtle
+    assert "<https://ontology.company.com/Employee>" in turtle
+    assert "<https://ontology.company.com/worksOn>" in turtle
+    assert "<caracaldb://resource/project/P9>" in turtle
+
+
+def test_import_resource_rejects_unknown_shape(tmp_path: Path) -> None:
+    with (
+        cdb.connect(tmp_path / "unknown-resource", format="bundle") as db,
+        pytest.raises(CaracalError) as exc,
+    ):
+        db.import_resource({"name": "Lukas Hoffman"})
+
+    assert exc.value.code == "CDB-7010"
+    assert "unsupported resource shape" in exc.value.message

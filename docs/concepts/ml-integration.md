@@ -1,7 +1,7 @@
 ---
-applies_to: v0.1.x
+applies_to: v0.2.x
 status: experimental
-last_updated: 2026-04-28
+last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
@@ -24,8 +24,8 @@ flowchart LR
 
 | Part | Shape |
 |---|---|
-| Nodes | `nodes[class_iri] -> pyarrow.Table` with at least `nid` |
-| Edges | `edges[property_iri] -> pyarrow.Table` with `src` and `dst` |
+| Nodes | `nodes[class_or_type] -> pyarrow.Table` with stable user columns such as `node_id` |
+| Edges | `edges[relation_type] -> pyarrow.Table` with compact `src` and `dst` ids |
 | Metadata | `meta[str] -> str` for snapshot id, seed set, or export notes |
 
 ## Code Shape
@@ -39,7 +39,7 @@ sg.add_nodes("http://example.org/Gene", pa.table({"nid": [1], "symbol": ["TP53"]
 ```
 ## Why This Shape
 
-Arrow tables keep feature columns and graph identities in one place. That makes the conversion boundary explicit and avoids baking one ML framework into the storage layer.
+Arrow tables keep feature columns and graph identities in one place. For GNN-style tables, `node_id` is the stable id from the dataset; CaracalDB may also maintain compact internal ids for storage, adjacency, and sampling. In v0.2.0, resource-shaped input such as Neo4j JSON, IRI resources, and triples can normalize to the same `node_id` plus compact-id model before ML export. That makes the conversion boundary explicit and avoids baking one ML framework into the storage layer.
 
 !!! note "Common misconception"
     CaracalDB does not need to become a training framework. Its job is to produce reproducible graph slices that training frameworks can consume.

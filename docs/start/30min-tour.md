@@ -1,13 +1,13 @@
 ---
-applies_to: v0.1.x
+applies_to: v0.2.x
 status: experimental
-last_updated: 2026-04-28
+last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
 # 30-Minute Tour
 
-This tour gives you the shape of CaracalDB without pretending every planned surface is equally executable in v0.1.x. Follow it after the quickstart when you want the map: packed database, class definition, inserts, query, ontology, snapshots, and ML handoff.
+This tour gives you the shape of CaracalDB without pretending every planned surface is equally executable in v0.2.x. Follow it after the quickstart when you want the map: packed database, class definition, inserts, flexible resource ingest, query, ontology, snapshots, and ML handoff.
 
 ## 1. Open A Database
 
@@ -21,7 +21,7 @@ db = cdb.connect("tour")
 
 ## 2. Define A Class
 
-Classes are the names Tuft queries match. `define_class` creates the catalog entry and gives it a stable IRI.
+Classes are the names Tuft queries match. `define_class` creates the catalog entry; an explicit IRI is only needed when ontology identity matters.
 
 ```python
 db.define_class("Gene")
@@ -44,7 +44,7 @@ db.insert_nodes(
 
 ## 4. Run A Query
 
-The v0.1.x query path supports a focused single-node pattern with `WHERE`, `RETURN`, and `LIMIT`.
+The v0.2.x query path supports a focused single-node pattern with `WHERE`, `RETURN`, and `LIMIT`.
 
 ```tuft
 MATCH (g:Gene)
@@ -81,9 +81,45 @@ db.define_class(
 )
 ```
 
-The focused `SUBCLASSOF*` class closure predicate is available in the v0.1.x query path. Broader reasoning features such as property closure and explicit `INFER CLOSURE` materialization are still experimental.
+The focused `SUBCLASSOF*` class closure predicate is available in the v0.2.x query path. Broader reasoning features such as property closure and explicit `INFER CLOSURE` materialization are still experimental.
 
-## 6. Think In Snapshots
+## 6. Import Resource-Shaped Data
+
+Not every graph arrives as one node table and one edge table. `import_resource` accepts common resource shapes and normalizes them to CaracalDB nodes, edges, and internal resource ids.
+
+```python
+db.insert_triples(
+    [
+        {"subject": "project/P9", "predicate": "rdf:type", "object": "Project"},
+        {"subject": "project/P9", "predicate": "name", "object": "Risk Model"},
+    ]
+)
+
+db.import_resource(
+    {
+        "id": "employee/E12345",
+        "labels": ["Employee"],
+        "properties": {"name": "Lukas Hoffman"},
+        "relationships": {"worksOn": "project/P9"},
+    }
+)
+
+ref = db.resource("employee/E12345")
+print(ref.display_iri)  # caracaldb://resource/employee/E12345
+```
+
+Raw triples can land through the same model:
+
+```python
+db.insert_triples(
+    [
+        {"subject": "system/customer-data-lake", "predicate": "rdf:type", "object": "System"},
+        {"subject": "system/customer-data-lake", "predicate": "name", "object": "Customer Data Lake"},
+    ]
+)
+```
+
+## 7. Think In Snapshots
 
 Snapshots name a read view by LSN. The language reserves `AS_OF` for snapshot-bound reads, while the storage layer already has a named snapshot registry.
 
@@ -92,7 +128,7 @@ MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
 RETURN g.symbol
 ```
 
-## 7. Hand Off To Analytics Or ML
+## 8. Hand Off To Analytics Or ML
 
 CaracalDB can return Arrow tables when you need columnar interop, while higher-level examples can stay with Python rows.
 
