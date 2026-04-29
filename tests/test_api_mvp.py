@@ -134,3 +134,25 @@ def test_database_sql_subclassof_star_allows_additional_filters(tmp_path: Path) 
             """).rows()
 
     assert rows == [{"symbol": "TP53"}]
+
+
+def test_define_class_merges_superclass_for_existing_class(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "ontology-upgrade") as db:
+        db.define_class("Gene", iri="http://example.org/Gene")
+        db.define_class("ProteinCodingGene", iri="http://example.org/ProteinCodingGene")
+        db.insert_nodes("ProteinCodingGene", [{"symbol": "TP53"}])
+
+    with cdb.connect(tmp_path / "ontology-upgrade") as db:
+        db.define_class(
+            "ProteinCodingGene",
+            iri="http://example.org/ProteinCodingGene",
+            superclass_iris=("http://example.org/Gene",),
+        )
+
+        rows = db.sql("""
+            MATCH (g:ProteinCodingGene)
+            WHERE g.class SUBCLASSOF* <http://example.org/Gene>
+            RETURN g.symbol
+            """).rows()
+
+    assert rows == [{"symbol": "TP53"}]

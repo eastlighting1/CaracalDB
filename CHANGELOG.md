@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.4] - 2026-04-29
+
+Patch release for idempotent ontology hierarchy updates.
+
+### Fixed
+
+- `Database.define_class(..., superclass_iris=...)` now merges superclass
+  metadata into an existing class definition instead of returning the old
+  class unchanged.
+- Existing packed databases can be reopened and upgraded with superclass
+  metadata without deleting the `.crcl` file first.
+
+### Added
+
+- Added a regression test for reopening a database, adding superclass metadata
+  to an existing class, and querying it with `SUBCLASSOF*`.
+
 ## [0.1.3] - 2026-04-29
 
 Patch release for focused ontology class-closure queries.

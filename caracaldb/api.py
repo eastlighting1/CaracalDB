@@ -162,10 +162,14 @@ class Database:
         class_iri = iri or f"http://example.org/{name}"
         existing = self._catalog.class_by_iri(class_iri)
         if existing is not None:
-            return existing
+            return self._merge_class(existing, local_name=name, superclass_iris=superclass_iris)
         for candidate in self._catalog.classes:
             if (candidate.local_name or _local(candidate.iri)) == name:
-                return candidate
+                return self._merge_class(
+                    candidate,
+                    local_name=name,
+                    superclass_iris=superclass_iris,
+                )
         cls = self._catalog.register_class(
             iri=class_iri,
             local_name=name,
@@ -251,6 +255,33 @@ class Database:
                     return candidate
             raise CaracalError(code="CDB-6021", message=f"class not found in catalog: {iri!r}")
         return cls
+
+    def _merge_class(
+        self,
+        cls: ClassDef,
+        *,
+        local_name: str,
+        superclass_iris: tuple[str, ...],
+    ) -> ClassDef:
+        merged_superclasses = tuple(dict.fromkeys((*cls.superclass_iris, *superclass_iris)))
+        merged_local_name = cls.local_name or local_name
+        if merged_superclasses == cls.superclass_iris and merged_local_name == cls.local_name:
+            return cls
+
+        updated = ClassDef(
+            cid=cls.cid,
+            iri=cls.iri,
+            local_name=merged_local_name,
+            superclass_iris=merged_superclasses,
+            fields=cls.fields,
+            doc=cls.doc,
+        )
+        self._catalog.classes = tuple(
+            updated if item.cid == cls.cid else item for item in self._catalog.classes
+        )
+        self._catalog._touch()
+        save_catalog(self._bundle, self._catalog)
+        return updated
 
 
 def connect(path: str | Path, *, mode: str = "rw", format: str = "auto") -> Database:
