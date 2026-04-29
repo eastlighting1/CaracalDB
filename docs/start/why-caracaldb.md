@@ -39,5 +39,5 @@ LIMIT 5
 ```
 This is the core promise of v0.1.x: keep the graph model explicit, run a focused Tuft query, and hand the result to Arrow-compatible Python code.
 
-!!! note "Common misconception"
-    CaracalDB is not positioned as “Python instead of Rust.” The public package is Python-facing today, while the engine roadmap keeps the Rust implementation path explicit.
+!!! note "Current engine status"
+    CaracalDB v0.1.x uses a Python reference engine. A Rust core is planned, but current package behavior should be understood and tested as Python-backed unless a later version says otherwise.

@@ -8,7 +8,8 @@
   <a href="https://pypi.org/project/caracaldb/"><img src="https://img.shields.io/pypi/v/caracaldb" alt="PyPI version"></a>
   <img src="https://img.shields.io/pypi/pyversions/caracaldb" alt="Python versions">
   <img src="https://img.shields.io/badge/status-pre--alpha-D97706" alt="pre-alpha">
-  <img src="https://img.shields.io/badge/engine-Rust-CE412B" alt="rust-engine">
+  <img src="https://img.shields.io/badge/engine-Python_reference-2563EB" alt="python-reference-engine">
+  <img src="https://img.shields.io/badge/Rust_core-planned-CE412B" alt="rust-core-planned">
   <img src="https://img.shields.io/badge/license-Apache--2.0-4B5563" alt="Apache-2.0">
 </p>
 
@@ -19,7 +20,7 @@
   <a href="#architecture">Architecture</a>
 </p>
 
-`CaracalDB` is a Rust-engine embedded graph database for knowledge graphs, ontology-aware query planning, GNN sampling, and ML feature workflows. The first implementation is exposed through Python so the project can validate the `.crcl` storage format, Tuft query language, planner surface, and user-facing API while the Rust core takes shape.
+`CaracalDB` is an embedded graph database for knowledge graphs, ontology-aware query planning, GNN sampling, and ML feature workflows. The current implementation is a Python reference engine that validates the `.crcl` storage format, Tuft query language, planner surface, and user-facing API. A Rust core is planned, but it is not part of the current package.
 
 ## Quickstart
 
@@ -48,15 +49,14 @@ uv run pytest
 import caracaldb as cdb
 
 with cdb.connect("demo") as db:
-    conn = db.cursor()
-    table = conn.sql(
-        "MATCH (g:Gene) WHERE g.chromosome = '17' RETURN g.symbol LIMIT 5"
-    ).arrow()
+    db.define_class("Gene")
+    db.insert_nodes("Gene", [{"symbol": "TP53", "chromosome": "17"}])
 
-print(table.to_pylist())
+    rows = db.sql("MATCH (g:Gene) RETURN g.symbol").rows()
+    print(rows)
 ```
 
-The current MVP query path supports a single `MATCH (alias:Class)` node pattern with `WHERE`, `RETURN`, and `LIMIT`. Broader graph patterns, richer binding, and multi-hop query execution are tracked in the milestone docs.
+The current Python reference query path supports a single `MATCH (alias:Class)` node pattern with `WHERE`, `RETURN`, and `LIMIT`. Broader graph patterns, richer binding, and multi-hop query execution are tracked in the milestone docs.
 
 ## Start Here
 
@@ -91,7 +91,7 @@ flowchart LR
 - Arrow is the execution boundary for scan results and downstream analytics.
 - CSR and CSC graph layouts support traversal, neighbor sampling, and GNN workflows.
 - Snapshot, WAL, and packed `.crcl` storage paths are tested as first-class engine pieces.
-- The Python API is intentionally small and stable over the Rust engine boundary.
+- The Python API is intentionally small; Rust core work is planned after the reference behavior is stable.
 
 ## Benchmarks
 

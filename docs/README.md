@@ -9,6 +9,8 @@ engine_status: python-reference; rust-engine-planned
 
 CaracalDB documentation is organized for two audiences: users who build knowledge graph and GNN workflows on the database, and developers who extend the engine. This site starts from public-facing material only; internal design notes are not part of the documentation source.
 
+Current v0.1.x behavior is backed by the Python reference engine. A Rust core is planned, but it is not part of the current package.
+
 ## Where To Start
 
 - New to the project: read [Why CaracalDB](start/why-caracaldb.md), run [Quickstart](start/quickstart.md), then take the [30-Minute Tour](start/30min-tour.md).

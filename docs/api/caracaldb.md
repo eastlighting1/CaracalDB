@@ -7,7 +7,7 @@ engine_status: python-reference; rust-engine-planned
 
 # `caracaldb`
 
-This page documents the public Python entry points that are stable enough to use from applications. The v0.1.x surface is intentionally small: open a database, run a Tuft query through a connection, and materialize the result as Arrow.
+This page documents the public Python entry points that are stable enough to use from applications. The v0.1.x surface is intentionally small: open a database, define classes, insert node rows, run a Tuft query, and materialize the result as Python rows or Arrow.
 
 ## When To Use This Page
 
@@ -29,4 +29,4 @@ For task-oriented examples, start with [Quickstart](../start/quickstart.md). For
 
 ## Compatibility Notes
 
-CaracalDB keeps the Python import path stable while the engine implementation matures. Pages that differ after the Rust engine lands will carry explicit version metadata rather than hiding the difference in prose.
+CaracalDB keeps the Python import path stable while the engine implementation matures. The current package uses the Python reference engine; pages that differ after a Rust core lands will carry explicit version metadata rather than hiding the difference in prose.

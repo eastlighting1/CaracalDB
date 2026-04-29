@@ -9,6 +9,9 @@ engine_status: python-reference; rust-engine-planned
 
 CaracalDB uses ontology metadata to keep graph names meaningful. Classes and properties are not just labels; they can participate in hierarchy, domain, range, and closure rules that make query behavior more predictable across datasets.
 
+!!! warning "Current v0.1.x scope"
+    The public Python API can register classes and attach stable IRIs today. Hierarchy closure queries such as `SUBCLASSOF*` are a planned ontology-aware query surface, not a runnable v0.1.x `db.sql()` example.
+
 ## Mental Model
 
 ```mermaid
@@ -34,10 +37,26 @@ flowchart TD
 
 ## Catalog Shape
 
+For executable v0.1.x code, define classes through the database handle:
+
+```python
+import caracaldb as cdb
+
+with cdb.connect("ontology-demo") as db:
+    db.define_class("Gene", iri="http://example.org/Gene")
+    db.define_class(
+        "ProteinCodingGene",
+        iri="http://example.org/ProteinCodingGene",
+    )
+```
+
+The lower-level catalog stores the hierarchy metadata that future reasoning paths will consume:
+
 ```python
 from caracaldb.onto.catalog import Catalog
 
 catalog = Catalog.empty()
+catalog.register_class(iri="http://example.org/Gene", local_name="Gene")
 catalog.register_class(
     iri="http://example.org/ProteinCodingGene",
     local_name="ProteinCodingGene",
@@ -48,7 +67,7 @@ The superclass link is data, not prose. That lets documentation, validation, que
 
 ## Query Shape
 
-Tuft reserves hierarchy predicates for ontology-aware reads:
+Tuft reserves hierarchy predicates for ontology-aware reads. This is the intended contract for closure-aware execution, not the current MVP query path:
 
 ```tuft
 MATCH (g:ProteinCodingGene)

@@ -71,7 +71,7 @@ db.close()
 
 ## 5. Add Ontology Intent
 
-Ontology links make class names durable and explainable.
+Ontology metadata makes class names durable and explainable. In v0.1.x, the executable public API can register the class and IRI:
 
 ```python
 db.define_class(
@@ -80,7 +80,7 @@ db.define_class(
 )
 ```
 
-Hierarchy relationships are still an experimental surface in v0.1.x; use the ontology guide when you need superclass closure.
+Superclass closure is still an experimental surface in v0.1.x. `SUBCLASSOF*` examples in the ontology guide describe the intended query contract, not a query you should paste into the current `db.sql()` path.
 
 ## 6. Think In Snapshots
 

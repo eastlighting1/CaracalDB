@@ -1,5 +1,5 @@
 site_name: CaracalDB
-site_description: Documentation for CaracalDB, a Rust-engine embedded GraphDB.
+site_description: Documentation for CaracalDB, an embedded GraphDB with a Python reference engine and planned Rust core.
 site_url: https://caracaldb.dev/
 repo_url: https://github.com/eastlighting1/CaracalDB
 docs_dir: docs

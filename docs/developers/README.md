@@ -15,6 +15,6 @@ Developer documentation is for contributors extending CaracalDB internals.
 - [Testing strategy](testing-strategy.md) and release gates.
 - Benchmark infrastructure.
 - [Error-code policy](error-policy.md).
-- Rust engine roadmap.
+- Planned Rust core roadmap.
 
 The developer section should keep implementation details out of user-facing pages.

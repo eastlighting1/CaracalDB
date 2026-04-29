@@ -18,7 +18,20 @@ Real datasets rarely agree on one flat label set. A biomedical graph might conta
 
 ## Steps
 
-1. Register classes with stable IRIs and superclass links.
+1. Register the classes that current queries can match.
+
+```python
+import caracaldb as cdb
+
+with cdb.connect("bio") as db:
+    db.define_class("Gene", iri="http://example.org/Gene")
+    db.define_class(
+        "ProteinCodingGene",
+        iri="http://example.org/ProteinCodingGene",
+    )
+```
+
+2. Record superclass intent in catalog metadata when you are building or testing ontology data.
 
 ```python
 from caracaldb.onto.catalog import Catalog
@@ -31,23 +44,25 @@ catalog.register_class(
     superclass_iris=("http://example.org/Gene",),
 )
 ```
-2. Use hierarchy-aware Tuft syntax when expressing the query intent.
+This lower-level catalog object is not automatically attached to an already-open database handle. Use the database API for runnable inserts and queries, and persist catalog metadata explicitly when writing internal tooling.
+
+3. Use hierarchy-aware Tuft syntax when expressing the future query intent.
 
 ```tuft
 MATCH (g:ProteinCodingGene)
 WHERE g.class SUBCLASSOF* <http://example.org/Gene>
 RETURN g.symbol
 ```
-3. Materialize closure when the graph needs reusable hierarchy lookup.
+4. Materialize closure when the graph needs reusable hierarchy lookup.
 
 ```tuft
 INFER CLOSURE (SUBCLASSOF) ON GRAPH biomedical
 ```
 ## Verification
 
-Reasoning is correct when a query for a parent class includes direct instances and instances of transitive child classes, while still preserving the original class identity for downstream analysis.
+Reasoning will be correct when a query for a parent class includes direct instances and instances of transitive child classes, while still preserving the original class identity for downstream analysis.
 
-For the current Python reference path, verify the catalog first: load the saved catalog, confirm each class IRI is present, and check that superclass IRIs point at registered classes before expecting query-time expansion.
+For the current Python reference path, verify the executable part first: define the class with `db.define_class`, insert rows with `db.insert_nodes`, and query the exact class label with `db.sql("MATCH (g:Gene) RETURN g.symbol")`. Then verify ontology metadata separately by loading the saved catalog, confirming each class IRI is present, and checking that superclass IRIs point at registered classes.
 
 ## Common Pitfalls
 

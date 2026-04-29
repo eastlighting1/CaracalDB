@@ -15,6 +15,8 @@ Patch release for the beginner-facing API and release gates.
   Quickstart-scale examples.
 - Reworked the Quickstart minimal query so it no longer exposes PyArrow or
   internal node-store wiring.
+- Clarified that v0.1.x ships a Python reference engine while the Rust core
+  remains planned.
 
 ### Changed
 
