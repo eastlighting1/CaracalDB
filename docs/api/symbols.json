@@ -13,6 +13,12 @@
   },
   {
     "kind": "class",
+    "name": "caracaldb.ResourceRef",
+    "summary": "Resolved CaracalDB resource identity.",
+    "url": "api/caracaldb/#resourceref"
+  },
+  {
+    "kind": "class",
     "name": "caracaldb.Result",
     "summary": "Materialized result from a CaracalDB query.",
     "url": "api/caracaldb/#result"
