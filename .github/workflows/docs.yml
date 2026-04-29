@@ -55,13 +55,12 @@ jobs:
           uv run python tools/gen_errors.py
           uv run python tools/gen_builtins.py
           uv run python tools/gen_tuft_grammar.py
-          uv run python tools/gen_milestones.py
           uv run python tools/gen_symbol_index.py
           uv run python tools/check_error_pages.py
           uv run python tools/check_docs_metadata.py
           uv run python tools/check_public_api_examples.py
           uv run python tools/check_docs_code_blocks.py
-          git diff --exit-code -- docs/errors/index.md docs/tuft/builtins.md docs/tuft/grammar.lark docs/developers/milestones.md docs/api/symbols.json
+          git diff --exit-code -- docs/errors/index.md docs/tuft/builtins.md docs/tuft/grammar.lark docs/api/symbols.json
 
       - name: Build MkDocs site
         run: uv run mkdocs build --strict -f mkdocs.yml
