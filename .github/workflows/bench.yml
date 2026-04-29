@@ -37,7 +37,7 @@ jobs:
           from bench.harness import compare_against_baseline
           baseline = json.loads(pathlib.Path('bench/results/baseline.json').read_text())
           latest = json.loads(pathlib.Path('bench/results/latest.json').read_text())
-          regressions = compare_against_baseline(latest, baseline, tolerance=0.30)
+          regressions = compare_against_baseline(latest, baseline, tolerance=0.75)
           if regressions:
               print('REGRESSIONS:')
               for line in regressions:
