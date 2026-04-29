@@ -58,6 +58,13 @@ dev = [
   "pytest-benchmark>=4.0",
   "ruff>=0.5",
 ]
+docs = [
+  "mkdocs>=1.6",
+  "mkdocs-include-markdown-plugin>=6.2",
+  "mkdocs-material>=9.5",
+  "mkdocs-section-index>=0.3",
+  "mkdocstrings[python]>=0.27",
+]
 io = [
   "lz4>=4.3",
   "zstandard>=0.22",

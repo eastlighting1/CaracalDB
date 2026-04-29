@@ -1,0 +1,7 @@
+# Mirror pointer for documentation contributors.
+#
+# The build configuration lives at the repository root as `mkdocs.yml` so CI,
+# local commands, and GitHub Pages workflows can run from the same path.
+#
+# Build with:
+#   uv run mkdocs build --strict -f mkdocs.yml

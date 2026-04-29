@@ -33,6 +33,15 @@ from caracaldb.storage.pack import is_packed, pack_bundle
 
 @dataclass(slots=True)
 class Result:
+    """Materialized result from a CaracalDB query.
+
+    Examples
+    --------
+    >>> result = Result([])
+    >>> result.arrow().num_rows
+    0
+    """
+
     _batches: list[pa.RecordBatch]
 
     def arrow(self) -> pa.Table:
@@ -45,6 +54,14 @@ class Result:
 
 
 class Connection:
+    """Query connection bound to an open :class:`Database`.
+
+    Examples
+    --------
+    >>> isinstance(Connection, type)
+    True
+    """
+
     def __init__(self, db: Database) -> None:
         self._db = db
 
@@ -89,6 +106,11 @@ class Database:
 
         with cdb.connect("data") as db:
             db.cursor().sql("MATCH ...")
+
+    Examples
+    --------
+    >>> isinstance(Database, type)
+    True
     """
 
     def __init__(
@@ -179,6 +201,14 @@ def connect(path: str | Path, *, mode: str = "rw", format: str = "auto") -> Data
         * ``"packed"`` — force packed single-file format.
         * ``"bundle"`` — force directory bundle format (the engine's
           internal working format).
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> root = tempfile.TemporaryDirectory()
+    >>> db = connect(Path(root.name) / "demo", format="bundle")
+    >>> db.close()
+    >>> root.cleanup()
     """
     if mode not in ("rw", "ro"):
         raise CaracalError(code="CDB-6022", message=f"unsupported mode: {mode}")

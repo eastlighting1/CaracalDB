@@ -28,25 +28,81 @@ class ErrorInfo:
 
 
 ERROR_TABLE: dict[str, ErrorInfo] = {
-    "TF-1001": ErrorInfo("TF-1001", "invalid character"),
-    "TF-1002": ErrorInfo("TF-1002", "unterminated string"),
-    "TF-2001": ErrorInfo("TF-2001", "unexpected token"),
-    "TF-2015": ErrorInfo("TF-2015", "missing pattern after MATCH"),
-    "TF-3001": ErrorInfo("TF-3001", "undefined prefix"),
-    "TF-3004": ErrorInfo("TF-3004", "unknown class"),
-    "TF-3005": ErrorInfo("TF-3005", "unknown property"),
-    "TF-4001": ErrorInfo("TF-4001", "type mismatch"),
-    "TF-4010": ErrorInfo("TF-4010", "implicit cast forbidden"),
-    "TF-5003": ErrorInfo("TF-5003", "aggregate not allowed in WHERE"),
-    "TF-6012": ErrorInfo("TF-6012", "graph function limit exceeded"),
-    "TF-7004": ErrorInfo("TF-7004", "index corruption detected"),
-    "TF-8002": ErrorInfo("TF-8002", "transaction conflict"),
+    "TF-1001": ErrorInfo(
+        "TF-1001",
+        "invalid character",
+        hint="remove the unsupported character or quote it inside a string literal",
+    ),
+    "TF-1002": ErrorInfo(
+        "TF-1002",
+        "unterminated string",
+        hint="add the closing quote or escape an embedded quote with a backslash",
+    ),
+    "TF-2001": ErrorInfo(
+        "TF-2001",
+        "unexpected token",
+        hint="check the token near the highlighted span against the Tuft grammar",
+    ),
+    "TF-2015": ErrorInfo(
+        "TF-2015",
+        "missing pattern after MATCH",
+        hint="add a node or relationship pattern immediately after MATCH",
+    ),
+    "TF-3001": ErrorInfo(
+        "TF-3001",
+        "undefined prefix",
+        hint="declare the namespace prefix before using it in an IRI or qualified name",
+    ),
+    "TF-3004": ErrorInfo(
+        "TF-3004",
+        "unknown class",
+        hint="register the class in the catalog or use an existing class local name",
+    ),
+    "TF-3005": ErrorInfo(
+        "TF-3005",
+        "unknown property",
+        hint="check the property name against the catalog for the matched class",
+    ),
+    "TF-4001": ErrorInfo(
+        "TF-4001",
+        "type mismatch",
+        hint="compare operands with compatible types or cast explicitly where supported",
+    ),
+    "TF-4010": ErrorInfo(
+        "TF-4010",
+        "implicit cast forbidden",
+        hint="rewrite the expression so both sides have the same expected type",
+    ),
+    "TF-5003": ErrorInfo(
+        "TF-5003",
+        "aggregate not allowed in WHERE",
+        hint="move aggregate predicates to a grouped or post-aggregation query stage",
+    ),
+    "TF-6012": ErrorInfo(
+        "TF-6012",
+        "graph function limit exceeded",
+        hint="lower the traversal fanout, depth, or row budget before retrying",
+    ),
+    "TF-7004": ErrorInfo(
+        "TF-7004",
+        "index corruption detected",
+        hint="rebuild the affected index from trusted source data",
+    ),
+    "TF-8002": ErrorInfo(
+        "TF-8002",
+        "transaction conflict",
+        hint="retry the transaction from a fresh snapshot",
+    ),
     "CDB-8002": ErrorInfo(
         "CDB-8002",
         "transaction conflict",
-        hint="another transaction committed a conflicting write — retry on a fresh snapshot",
+        hint="another transaction committed a conflicting write; retry on a fresh snapshot",
     ),
-    "TF-9501": ErrorInfo("TF-9501", "ontology constraint violated"),
+    "TF-9501": ErrorInfo(
+        "TF-9501",
+        "ontology constraint violated",
+        hint="fix the catalog or data so it satisfies the declared ontology constraint",
+    ),
 }
 
 

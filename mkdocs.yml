@@ -1,0 +1,165 @@
+site_name: CaracalDB
+site_description: Documentation for CaracalDB, a Rust-engine embedded GraphDB.
+site_url: https://caracaldb.dev/
+repo_url: https://github.com/eastlighting1/CaracalDB
+docs_dir: docs
+site_dir: site
+strict: true
+exclude_docs: |
+  01_language_spec.md
+  02_engine_spec.md
+  03_user_modeling_case_study.md
+  04_caracaldb_implementation.md
+  05_wbs.md
+  _generated/**
+  errors/TF-INDEX.md
+  errors/README.md
+  milestones/**
+  format/csr.md
+  release/**
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
+  - section-index
+  - include-markdown
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.snippets
+
+nav:
+  - Home: README.md
+  - Start:
+      - Why CaracalDB: start/why-caracaldb.md
+      - Quickstart: start/quickstart.md
+      - 30-Minute Tour: start/30min-tour.md
+      - Install: start/install.md
+      - FAQ: start/faq.md
+  - Concepts:
+      - Overview: concepts/overview.md
+      - Data Model: concepts/data-model.md
+      - Ontology: concepts/ontology.md
+      - Tuft vs Cypher vs SPARQL: concepts/tuft-vs-cypher-vs-sparql.md
+      - Storage Layout: concepts/storage-layout.md
+      - Snapshots And MVCC: concepts/snapshots-and-mvcc.md
+      - ML Integration: concepts/ml-integration.md
+      - Lynxes And GraphFrame: concepts/lynxes-and-graphframe.md
+  - Guides:
+      - Overview: guides/README.md
+      - Ingest Parquet: guides/ingest-parquet.md
+      - Build CSR And CSC: guides/build-csr-and-csc.md
+      - Pattern Queries: guides/pattern-queries.md
+      - Aggregations And Top-K: guides/aggregations-and-topk.md
+      - Ontology Reasoning: guides/ontology-reasoning.md
+      - kNN With HNSW: guides/knn-with-hnsw.md
+      - Neighbor Loader PyG: guides/neighbor-loader-pyg.md
+      - Transactions: guides/transactions.md
+      - Snapshots AS_OF: guides/snapshots-as-of.md
+      - UDFs Tuft And Python: guides/udfs-tuft-and-python.md
+      - Procedures: guides/procedures.md
+      - Feature Store: guides/feature-store.md
+      - Export Subgraph: guides/export-subgraph.md
+      - Observability: guides/observability-explain-profile.md
+      - Benchmark And Regression: guides/benchmark-and-regression.md
+      - Packaging And CLI: guides/packaging-and-cli.md
+  - Tutorials:
+      - Overview: tutorials/README.md
+      - Case A Biomedical: tutorials/case-a-biomedical.md
+      - Case B Fintech: tutorials/case-b-fintech.md
+      - Case C Recsys: tutorials/case-c-recsys.md
+      - Notebooks: tutorials/notebooks.md
+  - Tuft:
+      - Overview: tuft/README.md
+      - Reference: tuft/reference.md
+      - Specification: tuft/spec.md
+      - Built-ins: tuft/builtins.md
+      - Grammar: tuft/grammar.lark
+  - API:
+      - Overview: api/README.md
+      - caracaldb: api/caracaldb.md
+      - Storage: api/storage.md
+      - Graph: api/graph.md
+      - Plan: api/plan.md
+      - Exec: api/exec.md
+      - ML: api/ml.md
+      - Feature: api/feature.md
+      - Observability: api/observability.md
+      - Transactions: api/tx.md
+      - UDF: api/udf.md
+  - Errors:
+      - Index: errors/index.md
+      - Tuft:
+          - TF-1001 Invalid Character: errors/tf/TF-1001-invalid-character.md
+          - TF-1002 Unterminated String: errors/tf/TF-1002-unterminated-string.md
+          - TF-2001 Unexpected Token: errors/tf/TF-2001-unexpected-token.md
+          - TF-2015 Missing Pattern After MATCH: errors/tf/TF-2015-missing-pattern-after-match.md
+          - TF-3001 Undefined Prefix: errors/tf/TF-3001-undefined-prefix.md
+          - TF-3004 Unknown Class: errors/tf/TF-3004-unknown-class.md
+          - TF-3005 Unknown Property: errors/tf/TF-3005-unknown-property.md
+          - TF-4001 Type Mismatch: errors/tf/TF-4001-type-mismatch.md
+          - TF-4010 Implicit Cast Forbidden: errors/tf/TF-4010-implicit-cast-forbidden.md
+          - TF-5003 Aggregate In WHERE: errors/tf/TF-5003-aggregate-in-where.md
+          - TF-6012 Graph Budget: errors/tf/TF-6012-graph-budget.md
+          - TF-7004 Index Corruption: errors/tf/TF-7004-index-corruption.md
+          - TF-8002 Transaction Conflict: errors/tf/TF-8002-tx-conflict.md
+          - TF-9501 Ontology Constraint Violated: errors/tf/TF-9501-ontology-constraint-violated.md
+      - Engine:
+          - CDB-6020 MVP Shape: errors/cdb/CDB-6020-mvp-shape.md
+          - CDB-6040 Hash Join: errors/cdb/CDB-6040-hashjoin.md
+          - CDB-7001 Column Segment: errors/cdb/CDB-7001-column-segment.md
+          - CDB-7081 CSR Checksum: errors/cdb/CDB-7081-csr-checksum.md
+          - CDB-8002 Transaction Conflict: errors/cdb/CDB-8002-tx-conflict.md
+          - CDB-9001 Bundle Exists: errors/cdb/CDB-9001-bundle-exists.md
+  - Interop:
+      - Overview: interop/README.md
+      - Lynxes GraphFrame: interop/lynxes-graphframe.md
+      - Neo4j Migration: interop/neo4j-migration.md
+      - Neo4j Bolt Bridge: interop/neo4j-bolt-bridge.md
+      - PyG And DGL: interop/pyg-and-dgl.md
+      - jraph And JAX: interop/jraph-and-jax.md
+  - Format:
+      - Overview: format/README.md
+      - CRCL Bundle: format/crcl-bundle.md
+      - Manifest: format/manifest.md
+      - Column Segment: format/column-segment.md
+      - CSR / CSC: format/csr-csc.md
+      - WAL: format/wal.md
+      - Catalog FlatBuffers: format/catalog-fb.md
+  - Developers:
+      - Overview: developers/README.md
+      - Contributing: CONTRIBUTING.md
+      - Architecture: developers/architecture.md
+      - Contributing: developers/contributing.md
+      - Testing Strategy: developers/testing-strategy.md
+      - Benchmarks: developers/benchmarks.md
+      - Observability Internals: developers/observability-internals.md
+      - Error Policy: developers/error-policy.md
+      - Rust Port Roadmap: developers/rust-port-roadmap.md
+      - Tests: developers/tests.md
+      - Examples: developers/examples.md
+      - Milestones: developers/milestones.md
+      - ADR:
+          - Arrow Native Storage: adr/0001-arrow-native-storage.md
+          - Tuple IR For Expressions: adr/0002-tuple-ir-for-expressions.md
+          - Snapshot As LSN Window: adr/0003-snapshot-as-lsn-window.md
+          - Defer User Docs To v0.2.0: adr/0004-defer-user-docs-to-v020.md

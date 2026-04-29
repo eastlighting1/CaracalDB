@@ -1,0 +1,341 @@
+// Tuft Query Language grammar draft.
+//
+// Scope: M0 parser surface from docs/01_language_spec.md and
+// docs/04_caracaldb_implementation.md. Later WBS items extend semantic coverage.
+
+start: stmt_list
+
+stmt_list: stmt (";" stmt)* ";"?
+
+?stmt: ddl
+     | dml
+     | dql
+     | tx
+     | util
+
+// ---------------------------------------------------------------------------
+// Statements
+
+?ddl: prefix_decl
+    | base_decl
+    | create_ontology
+    | create_graph
+    | create_class
+    | create_property
+    | create_index
+    | alter_class
+    | drop_stmt
+
+prefix_decl: "PREFIX" prefix_name ":" iri_ref
+base_decl: "BASE" iri_ref
+
+create_ontology: "CREATE" "ONTOLOGY" qname ("WITH" "BASE" iri_ref)?
+create_graph: "CREATE" "GRAPH" ident ("USING" "ONTOLOGY" qname_list)?
+
+create_class: "CREATE" "CLASS" class_ref subclass_clause? class_props?
+subclass_clause: "SUBCLASSOF" class_ref_list
+class_props: "PROPERTIES" "(" property_field ("," property_field)* ","? ")"
+property_field: ident type_ref property_constraint*
+property_constraint: CONSTRAINT | default_clause | check_clause
+default_clause: "DEFAULT" expr
+check_clause: "CHECK" "(" expr ")"
+
+create_property: "CREATE" "PROPERTY" prop_ref "TYPE" property_kind property_domain? property_range? property_props? property_characteristics?
+property_kind: PROPERTY_KIND
+property_domain: "DOMAIN" class_ref_list
+property_range: "RANGE" type_ref_list
+property_props: "PROPERTIES" "(" property_field ("," property_field)* ","? ")"
+property_characteristics: "CHARACTERISTICS" "(" characteristic ("," characteristic)* ","? ")"
+characteristic: CHARACTERISTIC
+
+create_index: "CREATE" "INDEX" "ON" index_target "USING" index_kind index_options?
+index_target: label_ref "(" ident_list ")" | "EDGE" prop_ref
+index_kind: INDEX_KIND
+index_options: "(" named_arg ("," named_arg)* ","? ")"
+
+alter_class: "ALTER" "CLASS" class_ref ("ADD" "PROPERTY" property_field | "DROP" "PROPERTY" ident)
+drop_stmt: "DROP" ("ONTOLOGY" | "GRAPH" | "CLASS" | "PROPERTY" | "INDEX") qname
+
+?dml: insert_stmt
+    | update_stmt
+    | delete_stmt
+    | merge_stmt
+
+insert_stmt: insert_triples | insert_pattern | insert_from
+insert_triples: "INSERT" "TRIPLES" triple_block
+insert_pattern: "INSERT" pattern_list
+insert_from: "INSERT" ("INTO" label_ref | "EDGES" prop_ref) "FROM" source_kind string_lit insert_mapping?
+source_kind: SOURCE_KIND
+insert_mapping: "(" named_arg ("," named_arg)* ","? ")"
+
+update_stmt: query_body set_clause modifiers?
+delete_stmt: query_body delete_clause modifiers?
+merge_stmt: "MERGE" pattern_elem merge_action*
+merge_action: "ON" ("CREATE" | "MATCH") "SET" set_item ("," set_item)*
+
+tx: TX_OP
+
+util: explain_stmt | profile_stmt | infer_stmt | snapshot_stmt
+explain_stmt: "EXPLAIN" dql
+profile_stmt: "PROFILE" dql
+infer_stmt: "INFER" "CLOSURE" "(" ident_list ")" "ON" "GRAPH" ident
+snapshot_stmt: "CREATE" "SNAPSHOT" string_lit
+
+// ---------------------------------------------------------------------------
+// Query clauses
+
+dql: query_body modifiers?
+query_body: query_clause+
+
+?query_clause: match_clause
+             | optional_match_clause
+             | with_clause
+             | where_clause
+             | return_clause
+             | unwind_clause
+             | call_clause
+             | export_clause
+
+match_clause: "MATCH" pattern_list as_of?
+optional_match_clause: "OPTIONAL" "MATCH" pattern_list as_of?
+where_clause: "WHERE" expr
+with_clause: "WITH" projection_list where_clause?
+return_clause: "RETURN" "DISTINCT"? projection_list
+unwind_clause: "UNWIND" expr "AS" ident
+call_clause: "CALL" qname "(" [expr_list] ")" yield_clause?
+yield_clause: "YIELD" ident_list
+set_clause: "SET" set_item ("," set_item)*
+set_item: path_expr EQUAL expr
+delete_clause: "DETACH"? "DELETE" expr_list
+export_clause: "EXPORT" "SUBGRAPH" "AS" export_format export_body? "TO" string_lit
+export_format: EXPORT_FORMAT
+export_body: export_nodes? export_neighbors? export_edges?
+export_nodes: "NODES" "(" export_item ("," export_item)* ","? ")"
+export_edges: "EDGES" "(" prop_ref ("," prop_ref)* ","? ")"
+export_neighbors: "NEIGHBORS" "LAYERS" list_lit "VIA" "(" prop_ref ("," prop_ref)* ","? ")"
+export_item: ident? label_ref prop_projection?
+prop_projection: "{" ident_list? "}"
+
+projection_list: projection ("," projection)* ","?
+projection: expr ("AS" ident)?
+
+modifiers: order_clause skip_clause? limit_clause?
+         | skip_clause limit_clause?
+         | limit_clause
+order_clause: "ORDER" "BY" order_item ("," order_item)* ","?
+order_item: expr ORDER_DIR?
+skip_clause: ("SKIP" | "OFFSET") expr
+limit_clause: "LIMIT" expr
+as_of: "AS_OF" ("SNAPSHOT" string_lit | "DATETIME" datetime_lit)
+
+// ---------------------------------------------------------------------------
+// Patterns
+
+pattern_list: pattern ("," pattern)* ","?
+pattern: path_binding? pattern_chain
+path_binding: ident EQUAL
+pattern_chain: pattern_elem (rel pattern_elem)*
+
+pattern_elem: node_pattern
+node_pattern: "(" ident? label_list? prop_map? ")"
+
+rel: left_arrow? "-" rel_pattern "-" right_arrow?
+left_arrow: "<"
+right_arrow: ">"
+rel_pattern: "[" ident? rel_type_list? hop_range? prop_map? "]"
+
+label_list: label_ref ("&" label_ref)*
+rel_type_list: ":" prop_ref ("|" prop_ref)*
+hop_range: "*" INT? (".." INT?)?
+
+triple_block: "{" triple_pattern* "}"
+triple_pattern: triple_subject triple_predicate triple_object "."
+triple_subject: sparql_var | qname | iri_ref
+triple_predicate: A_PRED | qname | iri_ref
+triple_object: sparql_var | qname | literal
+
+// ---------------------------------------------------------------------------
+// Expressions
+
+?expr: or_expr
+
+?or_expr: and_expr
+        | or_expr OR_OP and_expr       -> bin_op
+
+?and_expr: not_expr
+         | and_expr AND_OP not_expr    -> bin_op
+
+?not_expr: comparison
+         | NOT_OP not_expr             -> unary_op
+
+?comparison: additive
+           | comparison comp_operator additive   -> bin_op
+           | comparison IN_OP additive     -> bin_op
+           | comparison "IS" "NULL"        -> is_null
+           | comparison "IS" "NOT" "NULL"  -> is_not_null
+           | comparison "SUBCLASSOF" "*" additive     -> subclassof_star
+           | comparison "SUBPROPERTYOF" "*" additive  -> subpropertyof_star
+
+comp_operator: COMP_OP | EQUAL
+
+?additive: multiplicative
+         | additive ADD_OP multiplicative  -> bin_op
+
+?multiplicative: unary
+               | multiplicative MUL_OP unary  -> bin_op
+
+?unary: postfix
+      | SIGN_OP unary                 -> unary_op
+
+?postfix: primary
+        | postfix "." ident           -> attr
+        | postfix "[" expr "]"        -> subscript
+        | postfix "::" type_ref       -> cast
+
+?primary: literal
+        | path_expr
+        | function_call
+        | case_expr
+        | exists_expr
+        | list_lit
+        | map_lit
+        | "(" expr ")"
+
+path_expr: ident ("." ident)*
+function_call: qname "(" [expr_list] ")"
+case_expr: "CASE" case_when+ case_else? "END"
+case_when: "WHEN" expr "THEN" expr
+case_else: "ELSE" expr
+exists_expr: "EXISTS" pattern
+
+expr_list: expr ("," expr)* ","?
+
+// ---------------------------------------------------------------------------
+// Literals and composite values
+
+?literal: number
+        | string_lit
+        | bool_lit
+        | null_lit
+        | date_lit
+        | time_lit
+        | datetime_lit
+        | duration_lit
+        | iri_ref
+        | typed_string_lit
+        | lang_string_lit
+
+number: INT | FLOAT | DECIMAL
+string_lit: STRING
+bool_lit: BOOL_LIT
+null_lit: NULL_LIT
+date_lit: "DATE" STRING
+time_lit: "TIME" STRING
+datetime_lit: "DATETIME" STRING
+duration_lit: "DURATION" STRING
+typed_string_lit: STRING "^^" qname
+lang_string_lit: STRING LANGTAG
+
+list_lit: "[" [expr_list] "]"
+map_lit: "{" [map_entry ("," map_entry)* ","?] "}"
+prop_map: "{" [prop_entry ("," prop_entry)* ","?] "}"
+prop_entry: ident ":" expr
+map_entry: (ident | string_lit) ":" expr
+
+// ---------------------------------------------------------------------------
+// Types and names
+
+type_ref_list: type_ref ("," type_ref)* ","?
+
+?type_ref: primitive_type
+         | qname
+         | list_type
+         | map_type
+         | struct_type
+         | vector_type
+         | matrix_type
+         | union_type
+
+primitive_type: PRIMITIVE_TYPE decimal_params?
+decimal_params: "(" INT "," INT ")"
+list_type: "LIST" "<" type_ref ">"
+map_type: "MAP" "<" type_ref "," type_ref ">"
+struct_type: "STRUCT" "{" struct_field ("," struct_field)* ","? "}"
+struct_field: ident ":" type_ref
+vector_type: "VECTOR" "<" type_ref "," INT ">"
+matrix_type: "MATRIX" "<" type_ref "," INT "," INT ">"
+union_type: type_atom ("|" type_atom)+
+?type_atom: primitive_type | qname | list_type | map_type | vector_type | matrix_type | "(" type_ref ")"
+
+named_arg: ident EQUAL expr
+ident_list: ident ("," ident)* ","?
+qname_list: qname ("," qname)* ","?
+class_ref_list: class_ref ("," class_ref)* ","?
+
+label_ref: ":" class_ref
+class_ref: ref
+prop_ref: ref
+ref: qname | iri_ref
+qname: PREFIXED_NAME | default_qname | ident
+default_qname: ":" ident
+prefix_name: IDENT
+ident: IDENT | ESCAPED_IDENT
+iri_ref: IRI
+sparql_var: SPARQL_VAR
+
+// ---------------------------------------------------------------------------
+// Terminals
+
+IRI: /<[^<>"{}|^`\\\x00-\x20]*>/
+SPARQL_VAR: /[?$][A-Za-z_][A-Za-z0-9_]*/
+PREFIXED_NAME: /[A-Za-z_][A-Za-z0-9_-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*/
+ESCAPED_IDENT: /`[^`]+`/
+IDENT: /[A-Za-z_][A-Za-z0-9_]*/
+LANGTAG: /@[A-Za-z]+(-[A-Za-z0-9]+)*/
+
+A_PRED: "a"
+PROPERTY_KIND: "OBJECT" | "DATATYPE"
+CHARACTERISTIC: "SYMMETRIC" | "TRANSITIVE" | "REFLEXIVE" | "INVERSE" | "FUNCTIONAL"
+INDEX_KIND: "CSR" | "CSC" | "HNSW" | "IVF" | "BTREE" | "HASH" | "BITMAP"
+SOURCE_KIND: "PARQUET" | "ARROW" | "CSV"
+TX_OP: "BEGIN" | "COMMIT" | "ROLLBACK"
+EXPORT_FORMAT: "ARROW" | "PARQUET"
+ORDER_DIR: "ASC" | "DESC"
+BOOL_LIT: "true" | "false" | "TRUE" | "FALSE"
+NULL_LIT: "null" | "NULL"
+CONSTRAINT: "REQUIRED" | "UNIQUE"
+PRIMITIVE_TYPE.2: "BOOL"
+              | "INT8" | "INT16" | "INT32" | "INT64" | "INT"
+              | "UINT8" | "UINT16" | "UINT32" | "UINT64"
+              | "F32" | "F64"
+              | "DECIMAL"
+              | "STRING" | "BYTES"
+              | "DATETIME" | "DATE" | "TIME" | "DURATION"
+              | "IRI" | "UUID"
+              | "NODE" | "EDGE" | "TRIPLE" | "PATH" | "SUBGRAPH"
+              | "CLASS" | "PROPERTY" | "EMBEDDING" | "ADJACENCY"
+OR_OP: "OR" | "XOR"
+AND_OP: "AND"
+NOT_OP: "NOT"
+IN_OP: "IN"
+COMP_OP: "<>" | "!=" | "<=" | "<" | ">=" | ">"
+EQUAL: "="
+ADD_OP: "+" | "-"
+MUL_OP: "*" | "/" | "%"
+SIGN_OP: "+" | "-"
+
+DECIMAL: /-?(?:[0-9][0-9_]*\.[0-9][0-9_]*|[0-9][0-9_]*)d(?:\([0-9]+,[0-9]+\))?/
+FLOAT: /-?(?:(?:[0-9][0-9_]*\.[0-9][0-9_]*)(?:[eE][+-]?[0-9][0-9_]*)?|(?:[0-9][0-9_]*)(?:[eE][+-]?[0-9][0-9_]*))(?:f32)?|inf|nan/
+INT: /-?(?:0x[0-9A-Fa-f_]+|0b[01_]+|[0-9][0-9_]*)/
+
+STRING: /"([^"\\]|\\.)*"/
+      | /'([^'\\]|\\.)*'/
+      | /"""(.|\n|\r)*?"""/
+
+LINE_COMMENT: /--[^\n\r]*/ | /#[^\n\r]*/
+BLOCK_COMMENT: /\/\*(.|\n|\r)*?\*\//
+
+%import common.WS
+%ignore WS
+%ignore LINE_COMMENT
+%ignore BLOCK_COMMENT

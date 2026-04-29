@@ -1,0 +1,45 @@
+---
+applies_to: v0.1.x
+status: experimental
+last_updated: 2026-04-28
+engine_status: python-reference; rust-engine-planned
+---
+
+# Snapshots And MVCC
+
+Snapshots give names to stable read views. MVCC gives the engine a way to decide which writes are visible to a reader and when a writer conflicts with another writer.
+
+## Mental Model
+
+```mermaid
+flowchart LR
+    A["WAL LSN"] --> B["SnapshotId"]
+    B --> C["Named snapshot"]
+    C --> D["AS_OF read"]
+    A --> E["Transaction snapshot"]
+    E --> F["Write-write conflict check"]
+```
+## Core Terms
+
+| Term | Meaning |
+|---|---|
+| LSN | Log sequence number used to order writes. |
+| Snapshot | A read view pinned at an LSN. |
+| Named snapshot | A durable snapshot entry in the bundle snapshot registry. |
+| `AS_OF` | Tuft syntax for binding a read to a snapshot. |
+| Write-write conflict | A commit rejection when another writer changed the same key after your snapshot. |
+
+## Storage Shape
+
+Named snapshots are recorded under the bundle's `snapshots/` area and mirrored in the `MANIFEST.snapshots` list. The transaction manager records begin, commit, and rollback events in the WAL.
+
+## Query Shape
+
+```tuft
+MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
+RETURN g.symbol
+```
+This syntax is the intended read contract. Check the API reference for the exact execution status in your installed version.
+
+!!! note "Common misconception"
+    A snapshot is not a copy of the whole database. It is a named read boundary, so the engine can decide which versions are visible.

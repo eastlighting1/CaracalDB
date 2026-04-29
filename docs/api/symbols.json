@@ -1,0 +1,32 @@
+[
+  {
+    "kind": "class",
+    "name": "caracaldb.Connection",
+    "summary": "Query connection bound to an open :class:`Database`.",
+    "url": "api/caracaldb/#connection"
+  },
+  {
+    "kind": "class",
+    "name": "caracaldb.Database",
+    "summary": "Handle to open CaracalDB database.",
+    "url": "api/caracaldb/#database"
+  },
+  {
+    "kind": "class",
+    "name": "caracaldb.Result",
+    "summary": "Materialized result from a CaracalDB query.",
+    "url": "api/caracaldb/#result"
+  },
+  {
+    "kind": "constant",
+    "name": "caracaldb.__version__",
+    "summary": "Package version.",
+    "url": "api/caracaldb/#__version__"
+  },
+  {
+    "kind": "function",
+    "name": "caracaldb.connect",
+    "summary": "Open or create a CaracalDB database.",
+    "url": "api/caracaldb/#connect"
+  }
+]
