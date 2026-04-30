@@ -28,6 +28,36 @@ class ErrorInfo:
 
 
 ERROR_TABLE: dict[str, ErrorInfo] = {
+    "CDB-6020": ErrorInfo(
+        "CDB-6020",
+        "operator shape mismatch",
+        hint="check that the operator input table has the expected columns and row shape",
+    ),
+    "CDB-6040": ErrorInfo(
+        "CDB-6040",
+        "hash join key mismatch",
+        hint="align join key names and compatible value types before planning the join",
+    ),
+    "CDB-7001": ErrorInfo(
+        "CDB-7001",
+        "column segment read failed",
+        hint="verify the bundle path and rebuild the affected column segment from source data",
+    ),
+    "CDB-7081": ErrorInfo(
+        "CDB-7081",
+        "CSR checksum mismatch",
+        hint="rebuild the CSR or CSC file; the stored footer checksum does not match the body",
+    ),
+    "CDB-8002": ErrorInfo(
+        "CDB-8002",
+        "transaction conflict",
+        hint="another transaction committed a conflicting write; retry on a fresh snapshot",
+    ),
+    "CDB-9001": ErrorInfo(
+        "CDB-9001",
+        "bundle already exists",
+        hint="choose a new path or open the existing bundle instead of creating it again",
+    ),
     "TF-1001": ErrorInfo(
         "TF-1001",
         "invalid character",
@@ -92,11 +122,6 @@ ERROR_TABLE: dict[str, ErrorInfo] = {
         "TF-8002",
         "transaction conflict",
         hint="retry the transaction from a fresh snapshot",
-    ),
-    "CDB-8002": ErrorInfo(
-        "CDB-8002",
-        "transaction conflict",
-        hint="another transaction committed a conflicting write; retry on a fresh snapshot",
     ),
     "TF-9501": ErrorInfo(
         "TF-9501",

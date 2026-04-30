@@ -11,9 +11,9 @@ from caracaldb.lang.diagnostics import ERROR_TABLE
 def render_index() -> str:
     lines = [
         "---",
-        "applies_to: v0.1.x",
+        "applies_to: v0.2.x",
         "status: generated",
-        "last_updated: 2026-04-28",
+        "last_updated: 2026-04-30",
         "engine_status: python-reference; rust-engine-planned",
         "---",
         "",
