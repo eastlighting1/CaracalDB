@@ -1,7 +1,7 @@
 ---
-applies_to: v0.1.x
+applies_to: v0.2.x
 status: generated
-last_updated: 2026-04-28
+last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
@@ -9,7 +9,12 @@ engine_status: python-reference; rust-engine-planned
 
 | Code | Title | Hint |
 |---|---|---|
+| `CDB-6020` | operator shape mismatch | check that the operator input table has the expected columns and row shape |
+| `CDB-6040` | hash join key mismatch | align join key names and compatible value types before planning the join |
+| `CDB-7001` | column segment read failed | verify the bundle path and rebuild the affected column segment from source data |
+| `CDB-7081` | CSR checksum mismatch | rebuild the CSR or CSC file; the stored footer checksum does not match the body |
 | `CDB-8002` | transaction conflict | another transaction committed a conflicting write; retry on a fresh snapshot |
+| `CDB-9001` | bundle already exists | choose a new path or open the existing bundle instead of creating it again |
 | `TF-1001` | invalid character | remove the unsupported character or quote it inside a string literal |
 | `TF-1002` | unterminated string | add the closing quote or escape an embedded quote with a backslash |
 | `TF-2001` | unexpected token | check the token near the highlighted span against the Tuft grammar |

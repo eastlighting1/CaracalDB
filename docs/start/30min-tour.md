@@ -71,7 +71,7 @@ db.close()
 
 ## 5. Add Ontology Intent
 
-Ontology metadata makes class names durable and explainable. In v0.1.x, the executable public API can register the class and IRI:
+Ontology metadata makes class names durable and explainable. In v0.2.x, the executable public API can register the class and IRI:
 
 ```python
 db.define_class(

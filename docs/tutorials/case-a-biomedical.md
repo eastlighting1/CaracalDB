@@ -1,13 +1,13 @@
 ---
-applies_to: v0.1.x
+applies_to: v0.2.x
 status: experimental
-last_updated: 2026-04-28
+last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
 # Case A: Biomedical Graph
 
-This tutorial follows the shape of `examples/biomed.ipynb` and the case-A golden tests. The goal is to model genes, tissues, and interactions, then use graph operators to answer biomedical-style neighborhood questions.
+This page is a narrative companion to `examples/biomed.ipynb` and the case-A golden tests, not a replacement for the runnable notebook. The goal is to model genes, tissues, and interactions, then use graph operators to answer biomedical-style neighborhood questions.
 
 ## Goal
 
@@ -30,7 +30,7 @@ Start from a small `Gene` and `Tissue` graph, then answer:
 | `interactsWith` | gene-to-gene interaction |
 | `expressedIn` | gene-to-tissue expression |
 
-## Walkthrough
+## Notebook-Backed Workflow
 
 1. Register `Gene` and `Tissue` classes in the catalog.
 2. Load nodes into class-specific node stores.
@@ -44,6 +44,8 @@ WHERE g.chromosome = '17'
 RETURN g.symbol
 ```
 The public Tuft MVP supports the single-node query above. The broader case-A operator chain mirrors what the planner will produce for multi-hop graph work.
+
+For the executable end-to-end flow, run `examples/biomed.ipynb` or the tests under `tests/golden/case_a`.
 
 ## Expected Result
 

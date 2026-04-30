@@ -1,7 +1,7 @@
 ---
-applies_to: v0.1.x
-status: experimental
-last_updated: 2026-04-28
+applies_to: v0.2.x
+status: stable
+last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
@@ -39,7 +39,7 @@ flowchart TD
 
 ## Directory vs Packed File
 
-`format="bundle"` opens a directory bundle directly. The default public path can create or open a packed `.crcl` file, unpack it into a working bundle, and repack it on close.
+`format="bundle"` opens a directory bundle directly. The default `connect()` call can create or open a packed `.crcl` file, unpack it into a working bundle, and repack it on close.
 
 ```python
 import caracaldb as cdb

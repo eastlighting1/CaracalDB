@@ -1,7 +1,7 @@
 ---
-applies_to: v0.1.x
+applies_to: v0.2.x
 status: experimental
-last_updated: 2026-04-28
+last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
@@ -29,6 +29,15 @@ flowchart LR
 | `AS_OF` | Tuft syntax for binding a read to a snapshot. |
 | Write-write conflict | A commit rejection when another writer changed the same key after your snapshot. |
 
+## Support Level
+
+| Surface | Status in v0.2.x |
+|---|---|
+| WAL-ordered transaction commits | Executable |
+| Write-write conflict detection | Executable |
+| Named snapshot metadata | Available through storage internals |
+| Tuft `AS_OF SNAPSHOT` syntax | Parsed, not a stable execution surface |
+
 ## Storage Shape
 
 Named snapshots are recorded under the bundle's `snapshots/` area and mirrored in the `MANIFEST.snapshots` list. The transaction manager records begin, commit, and rollback events in the WAL.
@@ -39,7 +48,7 @@ Named snapshots are recorded under the bundle's `snapshots/` area and mirrored i
 MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
 RETURN g.symbol
 ```
-This syntax is the intended read contract. Check the API reference for the exact execution status in your installed version.
+This syntax is the reserved read contract; the table above names its current execution status.
 
 !!! note "Common misconception"
     A snapshot is not a copy of the whole database. It is a named read boundary, so the engine can decide which versions are visible.

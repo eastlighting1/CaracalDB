@@ -1,13 +1,13 @@
 ---
-applies_to: v0.1.x
+applies_to: v0.2.x
 status: experimental
-last_updated: 2026-04-28
+last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
 # Case B: Fintech Graph
 
-This tutorial follows the shape of `examples/fraud.ipynb` and the case-B golden tests. The goal is to represent accounts and transfers, then derive features for risk or fraud workflows.
+This page is a narrative companion to `examples/fraud.ipynb` and the case-B golden tests, not a replacement for the runnable notebook. The goal is to represent accounts and transfers, then derive features for risk or fraud workflows.
 
 ## Goal
 
@@ -29,7 +29,7 @@ Build a small account graph and compute:
 |---|---|
 | `transferredTo` | directed money movement |
 
-## Walkthrough
+## Notebook-Backed Workflow
 
 1. Register the `Account` class.
 2. Load account nodes and transfer edges.
@@ -43,6 +43,8 @@ MATCH (a:Account)
 RETURN a.name, a.balance
 LIMIT 5
 ```
+For the executable end-to-end flow, run `examples/fraud.ipynb` or the tests under `tests/golden/case_b`.
+
 ## Expected Result
 
 The golden fixture computes a total balance of `1500.0`, detects account transfer fan-out, and raises `CDB-8002` when two transactions write the same account from competing snapshots.

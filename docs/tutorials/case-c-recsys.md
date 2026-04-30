@@ -1,13 +1,13 @@
 ---
-applies_to: v0.1.x
+applies_to: v0.2.x
 status: experimental
-last_updated: 2026-04-28
+last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
 # Case C: Recommendation Graph
 
-This tutorial follows the shape of `examples/recsys.ipynb` and the case-C golden tests. The goal is to sample user-item neighborhoods, run embedding lookup, and export batches for graph ML.
+This page is a narrative companion to `examples/recsys.ipynb` and the case-C golden tests, not a replacement for the runnable notebook. The goal is to sample user-item neighborhoods, run embedding lookup, and export batches for graph ML.
 
 ## Goal
 
@@ -30,7 +30,7 @@ Build a small recommendation workflow:
 |---|---|
 | `viewed` | user-to-item event |
 
-## Walkthrough
+## Notebook-Backed Workflow
 
 1. Store users and items with stable node ids.
 2. Build CSR for the `viewed` edge.
@@ -41,6 +41,8 @@ Build a small recommendation workflow:
 ```text
 User seeds -> viewed CSR -> NeighborLoader -> Subgraph -> PyG / DGL / jraph
 ```
+For the executable end-to-end flow, run `examples/recsys.ipynb` or the tests under `tests/golden/case_c`.
+
 ## Expected Result
 
 The golden fixture emits sampled layers `[0, 1]`, finds the nearest item for a known user embedding, and round-trips an exported subgraph through Arrow IPC.

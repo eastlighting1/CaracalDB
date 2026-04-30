@@ -1,7 +1,7 @@
 ---
-applies_to: v0.1.x
+applies_to: v0.2.x
 status: experimental
-last_updated: 2026-04-28
+last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
@@ -9,8 +9,15 @@ engine_status: python-reference; rust-engine-planned
 
 CaracalDB uses ontology metadata to keep graph names meaningful. Classes and properties are not just labels; they can participate in hierarchy, domain, range, and closure rules that make query behavior more predictable across datasets.
 
-!!! warning "Current v0.1.x scope"
-    The public Python API can register classes, attach stable IRIs, and run the focused `alias.class SUBCLASSOF* <IRI>` query shape. Broader ontology reasoning, property closure, and `INFER CLOSURE` materialization remain experimental.
+## Support Level
+
+| Surface | Status in v0.2.x |
+|---|---|
+| Class registration with local names | Executable |
+| Class IRIs and superclass metadata | Executable |
+| `alias.class SUBCLASSOF* <IRI>` | Executable in the focused query path |
+| Property closure | Experimental |
+| `INFER CLOSURE` materialization | Parsed utility syntax, not a stable execution surface |
 
 ## Mental Model
 

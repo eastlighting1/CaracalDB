@@ -56,7 +56,9 @@ flowchart LR
 | Result shape | Arrow table or Python rows | Driver records | RDF bindings |
 | Embedded Python workflow | Primary target | Usually remote server | Usually endpoint or library |
 
-Here, ontology graph means CaracalDB's graph model has two layers. In lightweight typed-graph mode, columns such as `node_id`, `type`, `src`, and `dst` are enough to load graph data for analytics or GNN work. In resource mode, Neo4j-style JSON objects, IRI resources, and raw triples normalize into the same internal nodes and edges. In ontology-enriched mode, the same classes and properties can also carry IRIs, prefixes, and hierarchy metadata.
+## What "Ontology Graph" Means
+
+CaracalDB's graph model has layered entry points. In lightweight typed-graph mode, columns such as `node_id`, `type`, `src`, and `dst` are enough to load graph data for analytics or GNN work. In resource mode, Neo4j-style JSON objects, IRI resources, and raw triples normalize into the same internal nodes and edges. In ontology-enriched mode, the same classes and properties can also carry IRIs, prefixes, and hierarchy metadata.
 
 This table can make the languages look like a menu of equivalent names. They are not equivalent in CaracalDB. The important difference is where each concept lives:
 
