@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-04-30
+
+Patch release for documentation polish and generated diagnostics alignment.
+
+### Changed
+
+- Updated Quickstart-adjacent public docs, ADRs, tutorials, and concept pages
+  so v0.2.x support levels are clearer to outside readers.
+- Registered documented CDB diagnostics in the runtime error table so the
+  generated error index stays aligned with public per-code pages.
+- Refreshed generated error metadata for the v0.2.x documentation line.
+
 ## [0.2.0] - 2026-04-30
 
 Minor release for flexible graph/resource ingest.

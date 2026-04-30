@@ -39,7 +39,7 @@ sg.add_nodes("http://example.org/Gene", pa.table({"nid": [1], "symbol": ["TP53"]
 ```
 ## Why This Shape
 
-Arrow tables keep feature columns and graph identities in one place. For GNN-style tables, `node_id` is the stable id from the dataset; CaracalDB may also maintain compact internal ids for storage, adjacency, and sampling. In v0.2.0, resource-shaped input such as Neo4j JSON, IRI resources, and triples can normalize to the same `node_id` plus compact-id model before ML export. That makes the conversion boundary explicit and avoids baking one ML framework into the storage layer.
+Arrow tables keep feature columns and graph identities in one place. For GNN-style tables, `node_id` is the stable id from the dataset; CaracalDB may also maintain compact internal ids for storage, adjacency, and sampling. In v0.2.1, resource-shaped input such as Neo4j JSON, IRI resources, and triples can normalize to the same `node_id` plus compact-id model before ML export. That makes the conversion boundary explicit and avoids baking one ML framework into the storage layer.
 
 !!! note "Common misconception"
     CaracalDB does not need to become a training framework. Its job is to produce reproducible graph slices that training frameworks can consume.
