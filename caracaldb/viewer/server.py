@@ -75,6 +75,7 @@ class _ViewerState:
             raise CaracalError(code="CDB-9102", message="no .crcl file is open")
         return self.db, self.source
 
+
 # ---------------------------------------------------------------------------
 # JSON helpers
 # ---------------------------------------------------------------------------
@@ -956,9 +957,7 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
                 db, _source = state.require_db()
                 all_nodes_limit = _all_nodes_query_limit(text)
                 if all_nodes_limit is not None:
-                    self._send_json(
-                        _all_classes_to_payload(db, limit=all_nodes_limit, offset=0)
-                    )
+                    self._send_json(_all_classes_to_payload(db, limit=all_nodes_limit, offset=0))
                     return
                 result = db.cursor().sql(text)
                 table = result.arrow()
