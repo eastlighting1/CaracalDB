@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.3] - 2026-05-02
+
+Patch release for the local `.crcl` web viewer workflow.
+
+### Added
+
+- Added a folder-rooted viewer mode so `caracal view` defaults to `data/` and
+  the web UI can discover and switch between `.crcl` files.
+- Added in-view direct path opening for `.crcl` files and bundles.
+- Added a persisted light/dark theme toggle for the viewer.
+
+### Changed
+
+- Updated the viewer default inspection query to show all node data with
+  `MATCH (n) RETURN n LIMIT 100`.
+- Refined the viewer layout, table sizing, dark-mode contrast, and query/result
+  proportions for browser use.
+
 ## [0.2.2] - 2026-05-02
 
 Patch release for the v0.2.x documentation and release metadata line.
