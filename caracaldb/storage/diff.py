@@ -18,7 +18,7 @@ statement about what the bundles contain, even if the *intent* was the same.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import pyarrow as pa
@@ -71,7 +71,10 @@ class BundleDiff:
             and not self.classes_removed
             and not self.properties_added
             and not self.properties_removed
-            and all(c.only_in_a == 0 and c.only_in_b == 0 and not c.schema_changed for c in self.class_changes)
+            and all(
+                c.only_in_a == 0 and c.only_in_b == 0 and not c.schema_changed
+                for c in self.class_changes
+            )
             and all(r.only_in_a == 0 and r.only_in_b == 0 for r in self.relation_changes)
         )
 

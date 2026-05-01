@@ -15,10 +15,13 @@ import tempfile
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import pyarrow as pa
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from caracaldb.exec.expr import compile_expr
 from caracaldb.exec.operator import ExecCtx, PhysicalOperator, run_pipeline
@@ -1046,10 +1049,7 @@ def _is_multi_element_pattern(query: ta.Query) -> bool:
     match_clause = next((c for c in query.clauses if isinstance(c, ta.MatchClause)), None)
     if match_clause is None or not match_clause.patterns:
         return False
-    for pattern in match_clause.patterns:
-        if len(pattern.elements) > 1:
-            return True
-    return False
+    return any(len(pattern.elements) > 1 for pattern in match_clause.patterns)
 
 
 @dataclass(slots=True)
@@ -1116,10 +1116,9 @@ def _compile_pattern_query(query: ta.Query, db: Database) -> _PatternPlan:
                 code="CDB-6020",
                 message="adjacent node patterns require a connecting -[rel]- element",
             )
-        if pending_rel.hop_range.min_hops not in (None, 1) or pending_rel.hop_range.max_hops not in (
-            None,
-            1,
-        ):
+        hop_min = pending_rel.hop_range.min_hops
+        hop_max = pending_rel.hop_range.max_hops
+        if hop_min not in (None, 1) or hop_max not in (None, 1):
             raise CaracalError(
                 code="CDB-6020",
                 message=(
@@ -1242,7 +1241,7 @@ def _detect_id_column(db: Database, head_class: ClassDef) -> str:
     return "nid"
 
 
-def _build_degree_lookup(db: Database, relation_local: str) -> "np.ndarray":
+def _build_degree_lookup(db: Database, relation_local: str) -> np.ndarray:
     """Return a uint64 array indexed by gid giving the out-degree under ``relation_local``.
 
     Memoised on the Database so repeated ``degree(_, "rel")`` calls within a
@@ -1403,7 +1402,7 @@ def _compile_pattern_fncall(
         import numpy as np
         import pyarrow as pa
 
-        def _apply(col: pa.Array, _lookup: "np.ndarray" = lookup) -> pa.Array:
+        def _apply(col: pa.Array, _lookup: np.ndarray = lookup) -> pa.Array:
             ids = np.asarray(col, dtype=np.uint64)
             return pa.array(np.take(_lookup, ids), type=pa.uint64())
 

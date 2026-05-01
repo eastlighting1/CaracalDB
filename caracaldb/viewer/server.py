@@ -32,7 +32,6 @@ from caracaldb.api import Database
 from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.storage.pack import is_packed
 
-
 # ---------------------------------------------------------------------------
 # JSON helpers
 # ---------------------------------------------------------------------------

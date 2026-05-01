@@ -20,7 +20,6 @@ from caracaldb.ingest.rdf_import import (
     parse_ntriples,
 )
 
-
 SAMPLE_NT = """\
 <http://x/tp53> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://x/Gene> .
 <http://x/tp53> <http://x/symbol> "TP53" .

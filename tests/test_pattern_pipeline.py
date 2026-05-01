@@ -187,10 +187,6 @@ def test_two_hop_pattern_returns_joined_columns(tmp_path: Path) -> None:
         "MATCH (a:A)-[:r1]->(b:B)-[:r2]->(c:C) "
         "RETURN a.label, b.label, c.label"
     ).rows()
-    triples = sorted(
-        (r["label"], r["label_2"] if "label_2" in r else r["label"], r.get("label_3"))
-        for r in rows
-    )
     # Note: RETURN columns are aliased by their tail field name 'label' three
     # times — pyarrow accepts duplicate column names but rows() collapses to
     # the last value, so use the test below as the canonical 2-hop assertion.
