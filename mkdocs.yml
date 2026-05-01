@@ -167,3 +167,4 @@ nav:
           - Tuple IR For Expressions: adr/0002-tuple-ir-for-expressions.md
           - Snapshot As LSN Window: adr/0003-snapshot-as-lsn-window.md
           - Defer User Docs To v0.2.0: adr/0004-defer-user-docs-to-v020.md
+          - RDF As Import Only: adr/0005-rdf-as-import-only.md

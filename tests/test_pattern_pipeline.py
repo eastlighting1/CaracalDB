@@ -33,9 +33,7 @@ def _seed_two_class_graph(tmp_path: Path) -> Path:
 
     save_catalog(bundle, catalog)
 
-    gene_store = open_node_store(
-        bundle, class_iri="http://x/Gene", local_name="Gene", create=True
-    )
+    gene_store = open_node_store(bundle, class_iri="http://x/Gene", local_name="Gene", create=True)
     # gids 0..2 for genes
     gene_store.append(
         pa.record_batch(
@@ -80,9 +78,7 @@ def _seed_two_class_graph(tmp_path: Path) -> Path:
 def test_one_hop_pattern_returns_joined_columns(tmp_path: Path) -> None:
     bundle_path = _seed_two_class_graph(tmp_path)
     db = cdb.connect(bundle_path, format="bundle")
-    rows = db.sql(
-        "MATCH (g:Gene)-[:expressed_in]->(t:Tissue) RETURN g.symbol, t.name"
-    ).rows()
+    rows = db.sql("MATCH (g:Gene)-[:expressed_in]->(t:Tissue) RETURN g.symbol, t.name").rows()
     pairs = sorted((r["symbol"], r["name"]) for r in rows)
     assert pairs == [("BRCA1", "liver"), ("TP53", "liver"), ("TP53", "lung")]
 
@@ -91,8 +87,7 @@ def test_one_hop_pattern_with_where_filter(tmp_path: Path) -> None:
     bundle_path = _seed_two_class_graph(tmp_path)
     db = cdb.connect(bundle_path, format="bundle")
     rows = db.sql(
-        "MATCH (g:Gene)-[:expressed_in]->(t:Tissue) "
-        "WHERE t.name = 'liver' RETURN g.symbol"
+        "MATCH (g:Gene)-[:expressed_in]->(t:Tissue) " "WHERE t.name = 'liver' RETURN g.symbol"
     ).rows()
     symbols = sorted(r["symbol"] for r in rows)
     assert symbols == ["BRCA1", "TP53"]
@@ -111,9 +106,7 @@ def test_unknown_relation_raises(tmp_path: Path) -> None:
     bundle_path = _seed_two_class_graph(tmp_path)
     db = cdb.connect(bundle_path, format="bundle")
     with pytest.raises(CaracalError) as exc:
-        db.sql(
-            "MATCH (g:Gene)-[:no_such_rel]->(t:Tissue) RETURN g.symbol"
-        ).rows()
+        db.sql("MATCH (g:Gene)-[:no_such_rel]->(t:Tissue) RETURN g.symbol").rows()
     assert exc.value.code == "CDB-6023"
 
 
@@ -157,9 +150,7 @@ def test_two_hop_pattern_returns_joined_columns(tmp_path: Path) -> None:
             }
         )
     )
-    r1 = open_edge_store(
-        bundle, property_iri="http://x/r1", local_name="r1", create=True
-    )
+    r1 = open_edge_store(bundle, property_iri="http://x/r1", local_name="r1", create=True)
     # a0 -> b0, a1 -> b1
     r1.append(
         pa.record_batch(
@@ -169,9 +160,7 @@ def test_two_hop_pattern_returns_joined_columns(tmp_path: Path) -> None:
             }
         )
     )
-    r2 = open_edge_store(
-        bundle, property_iri="http://x/r2", local_name="r2", create=True
-    )
+    r2 = open_edge_store(bundle, property_iri="http://x/r2", local_name="r2", create=True)
     # b0 -> c0, b1 -> c1, b1 -> c0
     r2.append(
         pa.record_batch(
@@ -184,8 +173,7 @@ def test_two_hop_pattern_returns_joined_columns(tmp_path: Path) -> None:
 
     db = cdb.connect(bundle_path, format="bundle")
     rows = db.sql(
-        "MATCH (a:A)-[:r1]->(b:B)-[:r2]->(c:C) "
-        "RETURN a.label, b.label, c.label"
+        "MATCH (a:A)-[:r1]->(b:B)-[:r2]->(c:C) " "RETURN a.label, b.label, c.label"
     ).rows()
     # Note: RETURN columns are aliased by their tail field name 'label' three
     # times — pyarrow accepts duplicate column names but rows() collapses to
@@ -234,9 +222,7 @@ def test_two_hop_pattern_distinguishes_columns_via_alias(tmp_path: Path) -> None
             }
         )
     )
-    r1 = open_edge_store(
-        bundle, property_iri="http://x/r1", local_name="r1", create=True
-    )
+    r1 = open_edge_store(bundle, property_iri="http://x/r1", local_name="r1", create=True)
     r1.append(
         pa.record_batch(
             {
@@ -245,9 +231,7 @@ def test_two_hop_pattern_distinguishes_columns_via_alias(tmp_path: Path) -> None
             }
         )
     )
-    r2 = open_edge_store(
-        bundle, property_iri="http://x/r2", local_name="r2", create=True
-    )
+    r2 = open_edge_store(bundle, property_iri="http://x/r2", local_name="r2", create=True)
     r2.append(
         pa.record_batch(
             {
@@ -318,9 +302,7 @@ def test_rel_type_union_merges_both_relations(tmp_path: Path) -> None:
     )
 
     db = cdb.connect(bundle_path, format="bundle")
-    rows = db.sql(
-        "MATCH (a:A)-[:r1|r2]->(b:B) RETURN a.label AS al, b.label AS bl"
-    ).rows()
+    rows = db.sql("MATCH (a:A)-[:r1|r2]->(b:B) RETURN a.label AS al, b.label AS bl").rows()
     pairs = sorted((r["al"], r["bl"]) for r in rows)
     assert pairs == [("a0", "b0"), ("a0", "b1"), ("a1", "b0")]
 
@@ -330,9 +312,7 @@ def test_rel_type_union_unknown_relation_raises(tmp_path: Path) -> None:
     bundle_path = _seed_two_class_graph(tmp_path)
     db = cdb.connect(bundle_path, format="bundle")
     with pytest.raises(CaracalError) as exc:
-        db.sql(
-            "MATCH (g:Gene)-[:expressed_in|nonexistent]->(t:Tissue) RETURN g.symbol"
-        ).rows()
+        db.sql("MATCH (g:Gene)-[:expressed_in|nonexistent]->(t:Tissue) RETURN g.symbol").rows()
     assert exc.value.code == "CDB-6023"
 
 
@@ -341,7 +321,7 @@ def test_degree_builtin_returns_per_node_out_degree(tmp_path: Path) -> None:
     bundle_path = _seed_two_class_graph(tmp_path)
     db = cdb.connect(bundle_path, format="bundle")
     rows = db.sql(
-        'MATCH (g:Gene)-[:expressed_in]->(t:Tissue) '
+        "MATCH (g:Gene)-[:expressed_in]->(t:Tissue) "
         'RETURN g.symbol, degree(g, "expressed_in") AS d'
     ).rows()
     # TP53 expressed in liver+lung (deg 2), BRCA1 in liver (deg 1)
@@ -356,7 +336,7 @@ def test_degree_builtin_unknown_relation_raises(tmp_path: Path) -> None:
     db = cdb.connect(bundle_path, format="bundle")
     with pytest.raises(CaracalError) as exc:
         db.sql(
-            'MATCH (g:Gene)-[:expressed_in]->(t:Tissue) '
+            "MATCH (g:Gene)-[:expressed_in]->(t:Tissue) "
             'RETURN g.symbol, degree(g, "no_such_rel") AS d'
         ).rows()
     assert exc.value.code == "CDB-6023"
@@ -368,7 +348,7 @@ def test_unsupported_graph_builtin_raises(tmp_path: Path) -> None:
     db = cdb.connect(bundle_path, format="bundle")
     with pytest.raises(CaracalError) as exc:
         db.sql(
-            'MATCH (g:Gene)-[:expressed_in]->(t:Tissue) '
+            "MATCH (g:Gene)-[:expressed_in]->(t:Tissue) "
             'RETURN neighbors(g, "expressed_in") AS ns'
         ).rows()
     assert exc.value.code == "CDB-6020"

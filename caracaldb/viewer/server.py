@@ -96,8 +96,7 @@ def _bundle_metadata(db: Database, source: Path) -> dict[str, Any]:
             num_rows = store.num_rows
             schema = store.schema
             columns = [
-                {"name": f.name, "type": str(f.type), "nullable": f.nullable}
-                for f in schema
+                {"name": f.name, "type": str(f.type), "nullable": f.nullable} for f in schema
             ]
         except CaracalError:
             num_rows = 0

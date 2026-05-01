@@ -1169,11 +1169,7 @@ def _compile_pattern_query(query: ta.Query, db: Database) -> _PatternPlan:
     alias_columns: dict[str, set[str]] = {alias: set() for alias in aliases}
     for proj in return_clause.projections:
         expr_obj, refs = _translate_pattern_expr(proj.expr, alias_set, db)
-        out_name = (
-            proj.alias.name
-            if proj.alias is not None
-            else _default_pattern_alias(proj.expr)
-        )
+        out_name = proj.alias.name if proj.alias is not None else _default_pattern_alias(proj.expr)
         projections.append((expr_obj, out_name))
         for alias_name, col in refs:
             alias_columns[alias_name].add(col)
@@ -1358,22 +1354,18 @@ def _compile_pattern_fncall(
     lands; the M2 gate doc tracks them as carry-overs.
     """
     if expr.name is None:
-        raise CaracalError(
-            code="CDB-6020", message=f"unsupported function call: {expr!r}"
-        )
+        raise CaracalError(code="CDB-6020", message=f"unsupported function call: {expr!r}")
     if isinstance(expr.name, ta.Ident):
         fn_name = expr.name.name
     elif isinstance(expr.name, ta.QName):
         fn_name = expr.name.value
     else:
-        raise CaracalError(
-            code="CDB-6020", message=f"unsupported function call: {expr!r}"
-        )
+        raise CaracalError(code="CDB-6020", message=f"unsupported function call: {expr!r}")
     if fn_name == "degree":
         if len(expr.args) != 2:
             raise CaracalError(
                 code="CDB-6020",
-                message="degree() takes exactly 2 args: degree(alias, \"relation\")",
+                message='degree() takes exactly 2 args: degree(alias, "relation")',
             )
         alias_arg, rel_arg = expr.args
         if not isinstance(alias_arg, ta.Var) or alias_arg.name is None:
@@ -1579,9 +1571,7 @@ def _readers_for_relation(
 
     prop = _find_property_by_local_name(db, relation_local)
     if prop is None:
-        raise CaracalError(
-            code="CDB-6023", message=f"property {relation_local!r} not in catalog"
-        )
+        raise CaracalError(code="CDB-6023", message=f"property {relation_local!r} not in catalog")
     edge_store = open_edge_store(
         db.bundle, property_iri=prop.iri, local_name=prop.local_name or _local(prop.iri)
     )

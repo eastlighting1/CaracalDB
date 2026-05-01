@@ -65,9 +65,7 @@ _TRIPLE_RE = re.compile(
     re.VERBOSE,
 )
 
-_LITERAL_RE = re.compile(
-    r'^"(?P<value>(?:[^"\\]|\\.)*)"(?:@[A-Za-z\-]+|\^\^<[^>]+>)?$'
-)
+_LITERAL_RE = re.compile(r'^"(?P<value>(?:[^"\\]|\\.)*)"(?:@[A-Za-z\-]+|\^\^<[^>]+>)?$')
 
 
 @dataclass(slots=True)
@@ -196,9 +194,7 @@ def lower_to_tables(
             stats.triples_kept += 1
             continue
         if is_iri:
-            edges.append(
-                {"node_id": subj, "src": subj, "dst": obj, "type": _local_name(pred)}
-            )
+            edges.append({"node_id": subj, "src": subj, "dst": obj, "type": _local_name(pred)})
             # The object also becomes a node we need to materialise; we let
             # it get its class either from a later rdf:type triple or
             # default_class below.

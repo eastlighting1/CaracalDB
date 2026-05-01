@@ -67,5 +67,5 @@ does not retain a triple-store layout once data is loaded.
 
 ## Non-goals (cross-reference)
 
-This ADR pairs with the **Non-goals** section of [README.md](../../README.md):
+This ADR pairs with the **Non-goals** section of [README.md](../README.md):
 no server, no auth, no SPARQL endpoint. RDF interop is import-only.

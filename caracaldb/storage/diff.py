@@ -261,17 +261,13 @@ def render_diff(diff: BundleDiff) -> str:
         lines.append("# Node sets")
         for c in changed_classes:
             extra = " (schema changed)" if c.schema_changed else ""
-            lines.append(
-                f"  {c.local_name}: -{c.only_in_a} +{c.only_in_b} ={c.in_both}{extra}"
-            )
+            lines.append(f"  {c.local_name}: -{c.only_in_a} +{c.only_in_b} ={c.in_both}{extra}")
     changed_rels = [r for r in diff.relation_changes if r.only_in_a or r.only_in_b]
     if changed_rels:
         lines.append("")
         lines.append("# Edge sets")
         for r in changed_rels:
-            lines.append(
-                f"  {r.local_name}: -{r.only_in_a} +{r.only_in_b} ={r.in_both}"
-            )
+            lines.append(f"  {r.local_name}: -{r.only_in_a} +{r.only_in_b} ={r.in_both}")
     return "\n".join(lines)
 
 

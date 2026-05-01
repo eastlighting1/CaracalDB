@@ -33,9 +33,7 @@ def _seed(path: Path, *, gene_gids: list[int], edges: list[tuple[int, int]]) -> 
     catalog.register_property(iri="http://x/expressed_in", local_name="expressed_in")
     save_catalog(bundle, catalog)
 
-    gene = open_node_store(
-        bundle, class_iri="http://x/Gene", local_name="Gene", create=True
-    )
+    gene = open_node_store(bundle, class_iri="http://x/Gene", local_name="Gene", create=True)
     gene.append(
         pa.record_batch(
             {
@@ -44,9 +42,7 @@ def _seed(path: Path, *, gene_gids: list[int], edges: list[tuple[int, int]]) -> 
             }
         )
     )
-    tissue = open_node_store(
-        bundle, class_iri="http://x/Tissue", local_name="Tissue", create=True
-    )
+    tissue = open_node_store(bundle, class_iri="http://x/Tissue", local_name="Tissue", create=True)
     tissue.append(
         pa.record_batch(
             {
