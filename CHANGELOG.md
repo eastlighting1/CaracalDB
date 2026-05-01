@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-05-02
+
+Patch release for the v0.2.x documentation and release metadata line.
+
+### Changed
+
+- Updated release metadata and smoke tests for the v0.2.2 package version.
+- Refreshed the ML integration docs to name the current v0.2.2 resource ingest
+  behavior.
+- Kept the Quickstart-adjacent documentation checks and generated docs gates
+  aligned with the v0.2.x docs surface.
+
 ## [0.2.1] - 2026-04-30
 
 Patch release for documentation polish and generated diagnostics alignment.
