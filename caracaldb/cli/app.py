@@ -20,6 +20,7 @@ from caracaldb.observability import explain_logical, render_explain
 from caracaldb.plan.cost import CatalogStats
 from caracaldb.plan.logical import LNodeScan
 from caracaldb.storage import create_bundle, open_bundle
+from caracaldb.storage.diff import diff_bundles, render_diff
 from caracaldb.storage.pack import pack_bundle, unpack_bundle
 
 app = typer.Typer(
@@ -80,6 +81,57 @@ def pack(
 ) -> None:
     """Package a `.crcl` directory bundle into a single file."""
     rc = cmd_pack(bundle_path, output, codec)
+    raise typer.Exit(rc)
+
+
+@app.command(name="import-rdf")
+def import_rdf(
+    bundle_path: Path = typer.Argument(..., help="Target `.crcl` bundle"),  # noqa: B008
+    source: Path = typer.Argument(..., help="Path to an N-Triples file"),  # noqa: B008
+    default_class: str = typer.Option(  # noqa: B008
+        "Resource",
+        "--default-class",
+        help="Class assigned to subjects without an rdf:type triple",
+    ),
+) -> None:
+    """Import an N-Triples file into a `.crcl` bundle.
+
+    Lowers triples into the columnar storage format per ADR-0005 (RDF as an
+    import surface, not an engine surface). For Turtle / RDF-XML, pre-convert
+    with ``rapper -o ntriples``.
+    """
+    rc = cmd_import_rdf(bundle_path, source, default_class)
+    raise typer.Exit(rc)
+
+
+@app.command()
+def diff(
+    a: Path = typer.Argument(..., help="Path to the first `.crcl` bundle"),  # noqa: B008
+    b: Path = typer.Argument(..., help="Path to the second `.crcl` bundle"),  # noqa: B008
+    json_out: bool = typer.Option(  # noqa: B008
+        False, "--json", help="Emit machine-readable JSON instead of a text diff"
+    ),
+) -> None:
+    """Diff two `.crcl` bundles at the catalog + node-set + edge-set level.
+
+    Exits 0 when bundles are equivalent and 1 when they differ — suitable for
+    use in audit / governance pipelines.
+    """
+    rc = cmd_diff(a, b, json_out)
+    raise typer.Exit(rc)
+
+
+@app.command()
+def view(
+    path: Path = typer.Argument(..., help="Path to a `.crcl` packed file or bundle"),  # noqa: B008
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address"),  # noqa: B008
+    port: int = typer.Option(8765, "--port", help="TCP port"),  # noqa: B008
+    no_browser: bool = typer.Option(  # noqa: B008
+        False, "--no-browser", help="Do not auto-open a browser tab"
+    ),
+) -> None:
+    """Launch a local web viewer for a `.crcl` file or bundle."""
+    rc = cmd_view(path, host=host, port=port, open_browser=not no_browser)
     raise typer.Exit(rc)
 
 
@@ -164,6 +216,49 @@ def cmd_pack(bundle_path: Path, output: Path | None, codec: str) -> int:
     return 0
 
 
+def cmd_import_rdf(bundle_path: Path, source: Path, default_class: str) -> int:
+    from caracaldb.ingest.rdf_import import import_ntriples
+
+    db = cdb.connect(bundle_path)
+    try:
+        stats = import_ntriples(db, source, default_class=default_class)
+    except CaracalError as exc:
+        typer.echo(f"caracal: {exc.code}: {exc.message}", err=True)
+        return 1
+    typer.echo(json.dumps(stats.to_dict(), indent=2))
+    return 0
+
+
+def cmd_diff(a: Path, b: Path, json_out: bool) -> int:
+    try:
+        bundle_diff = diff_bundles(a, b)
+    except CaracalError as exc:
+        typer.echo(f"caracal: {exc.code}: {exc.message}", err=True)
+        return 2
+    if json_out:
+        typer.echo(json.dumps(bundle_diff.to_dict(), indent=2, sort_keys=True))
+    else:
+        typer.echo(render_diff(bundle_diff))
+    return 0 if bundle_diff.is_empty() else 1
+
+
+def cmd_view(
+    path: Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    open_browser: bool = True,
+) -> int:
+    from caracaldb.viewer import serve
+
+    try:
+        serve(path, host=host, port=port, open_browser=open_browser)
+    except CaracalError as exc:
+        typer.echo(f"caracal: {exc.code}: {exc.message}", err=True)
+        return 1
+    return 0
+
+
 def cmd_unpack(file_path: Path, output: Path | None) -> int:
     try:
         dest = unpack_bundle(file_path, output)
@@ -190,10 +285,13 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "app",
     "cmd_bench",
+    "cmd_diff",
     "cmd_explain",
+    "cmd_import_rdf",
     "cmd_init",
     "cmd_pack",
     "cmd_run",
     "cmd_unpack",
+    "cmd_view",
     "main",
 ]

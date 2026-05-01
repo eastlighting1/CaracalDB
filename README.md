@@ -214,7 +214,21 @@ examples/    Runnable examples and case-study notebooks
 
 ## Project Status
 
-CaracalDB is pre-release and not yet suitable for production use. The current milestone line is documented in `docs/05_wbs.md`; M0 has been accepted in `docs/milestones/M0-gate.md`, and the repository is now focused on expanding the M1 vertical slice.
+CaracalDB is pre-release and not yet suitable for production use. M0 through M5 are accepted in `docs/milestones/`, and the engine is currently in the v0.2.x docs and benchmark sweep. Multi-hop pattern matching, rel-type unions, and the `degree()` graph built-in are wired through `Connection.sql`; variable-length paths, multi-label nodes, and the remaining graph-topology built-ins (`neighbors`, `shortest_path`, `k_hop`) are tracked carry-overs.
+
+The closest peers — embedded analytical graph engines — are [kuzu](https://github.com/kuzudb/kuzu), [DuckPGQ](https://duckpgq.org), and Memgraph's embedded library mode. Comparisons against server-tier graph databases (Neo4j Enterprise, Neptune, TigerGraph) are not the right reference frame for an embedded `.crcl` file.
+
+## Non-goals
+
+CaracalDB is deliberately scoped against a small set of features that belong in a different product:
+
+- **No server process, no network protocol.** No Bolt, no gRPC, no HTTP endpoint. The analogue is DuckDB or SQLite, not Neo4j Enterprise.
+- **No multi-writer concurrency.** A `.crcl` bundle is opened by one writer; readers can hold older snapshots. Coordinating multiple writers belongs to a layer above the engine.
+- **No authentication, authorization, or row-level ACLs.** Filesystem permissions are the only access boundary. Embedded governance belongs to the host application or a server tier.
+- **No SPARQL endpoint, no full OWL-DL.** CaracalDB supports OWL-RL-style class/property hierarchies and IRI identity; RDF/Turtle is an import concern, not an engine surface (see [docs/adr/0005-rdf-as-import-only.md](docs/adr/0005-rdf-as-import-only.md)).
+- **No bundled LLM / GraphRAG framework.** CaracalDB is a substrate for GNN and KG workflows; LLM glue is the host application's job. The Arrow `record_batches()` / `arrow()` outputs are the integration contract.
+
+The one governance-adjacent feature that *does* fit the embedded model is **deterministic, named snapshots with content-addressable manifests**, plus a `caracal diff` command for auditing graph versions. That lets an outer governance layer pin and diff a database without the engine taking on multi-tenant concerns.
 
 ## Contributing
 

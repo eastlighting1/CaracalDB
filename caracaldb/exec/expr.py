@@ -72,6 +72,16 @@ def compile_expr(expr: object) -> ExprFn:
             raise CaracalError(code="CDB-6010", message=f"not needs 1 operand: {expr!r}")
         inner = compile_expr(expr[1])
         return lambda batch: pc.invert(inner(batch))
+    if head == "py_unary":
+        # ("py_unary", callable, child_expr) — apply a pre-bound Python
+        # function to a single column. Used by graph built-ins like
+        # ``degree(alias, "rel")`` where the planner pre-computes a
+        # gid-indexed lookup array and binds it via closure.
+        if len(expr) != 3 or not callable(expr[1]):
+            raise CaracalError(code="CDB-6010", message=f"malformed py_unary: {expr!r}")
+        fn = expr[1]
+        child = compile_expr(expr[2])
+        return lambda batch: fn(child(batch))
     if head == "in":
         if (
             len(expr) != 3

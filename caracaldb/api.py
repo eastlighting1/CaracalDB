@@ -24,10 +24,18 @@ from caracaldb.exec.expr import compile_expr
 from caracaldb.exec.operator import ExecCtx, PhysicalOperator, run_pipeline
 from caracaldb.exec.operators import (
     ClosureScanOperator,
+    DropColumnsOperator,
+    ExpandOperator,
     FilterOperator,
+    HashJoinOperator,
     NodeScanOperator,
     ProjectOperator,
+    RenameOperator,
+    UnionAllOperator,
 )
+from caracaldb.graph.csc_builder import build_csc
+from caracaldb.graph.csr_builder import build_csr
+from caracaldb.graph.csr_reader import CsrReader
 from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.lang.tuft import ast as ta
 from caracaldb.lang.tuft import bind_program, parse_tuft
@@ -132,6 +140,14 @@ class Connection:
             )
         query = program.statements[0].query
         assert query is not None
+        if _is_multi_element_pattern(query):
+            plan_p = _compile_pattern_query(query, self._db)
+            op = _build_pattern_pipeline(plan_p, self._db)
+            ctx = ExecCtx()
+            batches = list(run_pipeline(op, ctx))
+            if plan_p.limit is not None:
+                batches = _apply_limit(batches, plan_p.limit)
+            return Result(batches)
         plan = _compile_query(query, self._db)
         op = _build_pipeline(plan, self._db)
         ctx = ExecCtx()
@@ -170,6 +186,7 @@ class Database:
         self._working_dir = _working_dir
         self._mode = _mode
         self._closed = False
+        self._csr_cache: dict[str, dict[str, CsrReader]] = {}
 
     @property
     def bundle(self) -> Bundle:
@@ -993,6 +1010,638 @@ def _default_alias(expr: ta.Expr, alias: str) -> str:
     if isinstance(expr, ta.Var) and expr.name is not None:
         return expr.name.name
     return "expr"
+
+
+# ---------------------------------------------------------------------------
+# Multi-hop pattern compilation
+# ---------------------------------------------------------------------------
+#
+# The single-class shortcut above (``_compile_query`` / ``_build_pipeline``)
+# only sees one ``NodePattern`` per ``MATCH`` and falls back to a pure
+# ``NodeScan``. The functions below cover the M2 carry-over recorded in
+# docs/milestones/M2-gate.md §"Carry-overs into M3":
+#
+#   "The pattern compiler (CDB-045) produces logical plans, but
+#    caracaldb.api.Connection.sql still uses the M1 single-class shortcut.
+#    M3 wires the compiler into the public API once LExpand/LJoin have
+#    physical translations bound to live CsrReader instances per property."
+#
+# Strategy: for ``(a:A)-[:rel]->(b:B)`` we build:
+#
+#     NodeScan(A) ─► Rename(a.) ──┐
+#                                  ├─► HashJoin (recover seed properties)
+#     NodeScan(A) ─► Rename(a.) ──┘    on a._cdb_gid
+#         └─► Expand(rel) ─►  produces (a._cdb_gid, b._cdb_gid)
+#
+#     ─► HashJoin(NodeScan(B) renamed b.) on b._cdb_gid (recover target props)
+#     ─► DropColumns (probe-side duplicate keys)
+#     ─► [Filter (WHERE)] ─► Project (RETURN)
+#
+# We prefer ``_cdb_gid`` as the join key because it is the global node id used
+# by ``insert_edge_table``; per-class ``nid`` is fine when the graph is
+# single-class (the path falls back to ``nid`` if ``_cdb_gid`` is absent).
+
+
+def _is_multi_element_pattern(query: ta.Query) -> bool:
+    match_clause = next((c for c in query.clauses if isinstance(c, ta.MatchClause)), None)
+    if match_clause is None or not match_clause.patterns:
+        return False
+    for pattern in match_clause.patterns:
+        if len(pattern.elements) > 1:
+            return True
+    return False
+
+
+@dataclass(slots=True)
+class _PatternHop:
+    head_alias: str
+    head_class: ClassDef
+    next_alias: str
+    next_class: ClassDef
+    relation_locals: tuple[str, ...]  # length>1 for rel-type union -[:p|q]-
+    direction: str  # "out" | "in" | "both"
+
+
+@dataclass(slots=True)
+class _PatternPlan:
+    head_alias: str
+    head_class: ClassDef
+    hops: tuple[_PatternHop, ...]
+    alias_columns: dict[str, set[str]]  # alias -> set of property column names needed
+    predicate: object | None
+    projections: tuple[tuple[object, str], ...]
+    limit: int | None
+    id_column: str  # "_cdb_gid" or "nid"
+
+
+def _compile_pattern_query(query: ta.Query, db: Database) -> _PatternPlan:
+    match_clause = next((c for c in query.clauses if isinstance(c, ta.MatchClause)), None)
+    return_clause = next((c for c in query.clauses if isinstance(c, ta.ReturnClause)), None)
+    where_clause = next((c for c in query.clauses if isinstance(c, ta.WhereClause)), None)
+    if match_clause is None or return_clause is None:
+        raise CaracalError(code="CDB-6020", message="multi-hop MATCH requires a RETURN clause")
+    if len(match_clause.patterns) != 1:
+        raise CaracalError(
+            code="CDB-6020",
+            message="multi-pattern MATCH (comma-separated) is not yet wired through conn.sql",
+        )
+
+    pattern = match_clause.patterns[0]
+    elements = list(pattern.elements)
+    if not isinstance(elements[0], ta.NodePattern):
+        raise CaracalError(code="CDB-6020", message="pattern must start with a node element")
+
+    # Decide the cross-class join key by inspecting the head class's node store.
+    head_node = elements[0]
+    head_alias = head_node.var.name if head_node.var is not None else "n0"
+    head_class = _resolve_pattern_class(db, head_node, query)
+    id_column = _detect_id_column(db, head_class)
+
+    hops: list[_PatternHop] = []
+    aliases: list[str] = [head_alias]
+    cursor_alias = head_alias
+    cursor_class = head_class
+    pending_rel: ta.RelPattern | None = None
+    for elem in elements[1:]:
+        if isinstance(elem, ta.RelPattern):
+            pending_rel = elem
+            continue
+        if not isinstance(elem, ta.NodePattern):
+            raise CaracalError(
+                code="CDB-6020",
+                message=f"unsupported pattern element kind: {type(elem).__name__}",
+            )
+        if pending_rel is None:
+            raise CaracalError(
+                code="CDB-6020",
+                message="adjacent node patterns require a connecting -[rel]- element",
+            )
+        if pending_rel.hop_range.min_hops not in (None, 1) or pending_rel.hop_range.max_hops not in (
+            None,
+            1,
+        ):
+            raise CaracalError(
+                code="CDB-6020",
+                message=(
+                    "variable-length paths *k..m are not yet wired through conn.sql; "
+                    "use 1-hop relations or build the pipeline directly"
+                ),
+            )
+        if not pending_rel.types:
+            raise CaracalError(code="CDB-6020", message="rel pattern must carry a -[:relation]-")
+        # Rel-type unions ``-[:p|q]->`` lower to one Expand per relation,
+        # merged via UnionAll before the property-recovery joins.
+        relation_locals: list[str] = []
+        for rel_label in pending_rel.types:
+            iri = rel_label.value if isinstance(rel_label, ta.Iri) else _expand(rel_label, query)
+            local = _local(iri) if iri.startswith("http") else iri
+            if local not in list_edge_stores(db.bundle):
+                raise CaracalError(
+                    code="CDB-6023",
+                    message=f"edge store missing for relation {local!r}",
+                    hint="insert edges with insert_edge_table or open_edge_store before querying",
+                )
+            relation_locals.append(local)
+        next_alias = elem.var.name if elem.var is not None else f"n{len(aliases)}"
+        next_class = _resolve_pattern_class(db, elem, query)
+        if pending_rel.direction == ta.Direction.OUT:
+            direction = "out"
+        elif pending_rel.direction == ta.Direction.IN:
+            direction = "in"
+        else:
+            direction = "both"
+        hops.append(
+            _PatternHop(
+                head_alias=cursor_alias,
+                head_class=cursor_class,
+                next_alias=next_alias,
+                next_class=next_class,
+                relation_locals=tuple(relation_locals),
+                direction=direction,
+            )
+        )
+        aliases.append(next_alias)
+        cursor_alias = next_alias
+        cursor_class = next_class
+        pending_rel = None
+
+    alias_set = set(aliases)
+    projections: list[tuple[object, str]] = []
+    alias_columns: dict[str, set[str]] = {alias: set() for alias in aliases}
+    for proj in return_clause.projections:
+        expr_obj, refs = _translate_pattern_expr(proj.expr, alias_set, db)
+        out_name = (
+            proj.alias.name
+            if proj.alias is not None
+            else _default_pattern_alias(proj.expr)
+        )
+        projections.append((expr_obj, out_name))
+        for alias_name, col in refs:
+            alias_columns[alias_name].add(col)
+
+    predicate: object | None = None
+    if where_clause is not None and where_clause.predicate is not None:
+        predicate, refs = _translate_pattern_expr(where_clause.predicate, alias_set, db)
+        for alias_name, col in refs:
+            alias_columns[alias_name].add(col)
+
+    limit = None
+    if query.modifiers.limit is not None:
+        limit = _eval_int_literal(query.modifiers.limit, "LIMIT")
+
+    return _PatternPlan(
+        head_alias=head_alias,
+        head_class=head_class,
+        hops=tuple(hops),
+        alias_columns=alias_columns,
+        predicate=predicate,
+        projections=tuple(projections),
+        limit=limit,
+        id_column=id_column,
+    )
+
+
+def _resolve_pattern_class(db: Database, node: ta.NodePattern, query: ta.Query) -> ClassDef:
+    if not node.labels:
+        raise CaracalError(
+            code="CDB-6020",
+            message="every node pattern must carry a class label in multi-hop MATCH",
+        )
+    if len(node.labels) > 1:
+        raise CaracalError(
+            code="CDB-6020",
+            message=(
+                "multi-label node patterns (a:Foo&:Bar) are not yet wired through conn.sql; "
+                "use a single label per node"
+            ),
+        )
+    label = node.labels[0]
+    class_iri = label.value if isinstance(label, ta.Iri) else _expand(label, query)
+    return _resolve_class(db.catalog, class_iri)
+
+
+def _detect_id_column(db: Database, head_class: ClassDef) -> str:
+    """Pick the join-key column produced by NodeScan for the head class.
+
+    Prefer the global ``_cdb_gid`` (set by ``insert_node_table`` /
+    ``insert_edge_table``) so edges built across classes line up with the
+    CSR. Fall back to per-class ``nid`` for graphs that were loaded directly
+    via ``insert_nodes`` + ``open_edge_store`` (the single-class case).
+    """
+    try:
+        store = open_node_store(
+            db.bundle,
+            class_iri=head_class.iri,
+            local_name=head_class.local_name or _local(head_class.iri),
+        )
+    except CaracalError:
+        return "nid"
+    schema_names = list(store.schema.names)
+    if _INTERNAL_GID_COLUMN in schema_names:
+        return _INTERNAL_GID_COLUMN
+    return "nid"
+
+
+def _build_degree_lookup(db: Database, relation_local: str) -> "np.ndarray":
+    """Return a uint64 array indexed by gid giving the out-degree under ``relation_local``.
+
+    Memoised on the Database so repeated ``degree(_, "rel")`` calls within a
+    session reuse the same lookup. Computed from the forward CSR's offsets,
+    which is already built (and cached) by ``_readers_for_relation``.
+    """
+    cache = getattr(db, "_degree_cache", None)
+    if cache is None:
+        cache = {}
+        db._degree_cache = cache  # type: ignore[attr-defined]
+    if relation_local in cache:
+        return cache[relation_local]
+    forward, _ = _readers_for_relation(db, relation_local, "out")
+    if forward is None:
+        raise CaracalError(
+            code="CDB-6023",
+            message=f"degree(): no forward CSR for relation {relation_local!r}",
+        )
+    import numpy as np
+
+    offsets = np.asarray(forward.offsets, dtype=np.uint64)
+    degrees = (offsets[1:] - offsets[:-1]).astype(np.uint64)
+    cache[relation_local] = degrees
+    return degrees
+
+
+def _translate_pattern_expr(
+    expr: ta.Expr | None,
+    aliases: set[str],
+    db: Database | None = None,
+) -> tuple[object, list[tuple[str, str]]]:
+    """Translate an expression that may reference multiple aliases.
+
+    Returns (compiled_expr_tuple, [(alias, column), ...]) where the column
+    references list is used to plan which node-store columns we must read.
+    Path expressions ``alias.field`` map to ``("col", "alias.field")`` so the
+    joined record batch (which carries dotted column names by construction)
+    can resolve them directly.
+    """
+    refs: list[tuple[str, str]] = []
+    compiled = _walk_pattern_expr(expr, aliases, refs, db)
+    return compiled, refs
+
+
+def _walk_pattern_expr(
+    expr: ta.Expr | None,
+    aliases: set[str],
+    refs: list[tuple[str, str]],
+    db: Database | None = None,
+) -> object:
+    if expr is None:
+        raise CaracalError(code="CDB-6020", message="empty expression")
+    if isinstance(expr, ta.PathExpr):
+        if expr.root is None or len(expr.steps) != 1:
+            raise CaracalError(
+                code="CDB-6020",
+                message="multi-hop MATCH supports single-step path expressions like alias.field",
+            )
+        alias_name = expr.root.name
+        if alias_name not in aliases:
+            raise CaracalError(
+                code="CDB-6020",
+                message=f"unbound variable: {alias_name!r} (known aliases: {sorted(aliases)})",
+            )
+        col = expr.steps[0].name
+        refs.append((alias_name, col))
+        return ("col", f"{alias_name}.{col}")
+    if isinstance(expr, ta.Var):
+        if expr.name is None:
+            raise CaracalError(code="CDB-6020", message="empty variable")
+        # Bare alias references resolve to the alias's id column; we'll fix
+        # it up when we know the id_column at pipeline build time. Encode as
+        # a placeholder now.
+        if expr.name.name in aliases:
+            return ("alias_id", expr.name.name)
+        raise CaracalError(
+            code="CDB-6020",
+            message=f"unbound variable: {expr.name.name!r} (known aliases: {sorted(aliases)})",
+        )
+    if isinstance(expr, ta.Literal):
+        return ("lit", expr.value)
+    if isinstance(expr, ta.BinOp):
+        op = _BIN_OP_TO_TUPLE.get(expr.op)
+        if op is None:
+            raise CaracalError(code="CDB-6020", message=f"unsupported operator: {expr.op}")
+        return (
+            op,
+            _walk_pattern_expr(expr.left, aliases, refs, db),
+            _walk_pattern_expr(expr.right, aliases, refs, db),
+        )
+    if isinstance(expr, ta.UnaryOp):
+        if expr.op.lower() in ("not", "!"):
+            return ("not", _walk_pattern_expr(expr.operand, aliases, refs, db))
+        raise CaracalError(code="CDB-6020", message=f"unsupported unary op: {expr.op}")
+    if isinstance(expr, ta.FnCall):
+        return _compile_pattern_fncall(expr, aliases, refs, db)
+    raise CaracalError(
+        code="CDB-6020", message=f"unsupported expression node: {type(expr).__name__}"
+    )
+
+
+def _compile_pattern_fncall(
+    expr: ta.FnCall,
+    aliases: set[str],
+    refs: list[tuple[str, str]],
+    db: Database | None,
+) -> object:
+    """Lower a function call inside a pattern WHERE/RETURN to an expr tuple.
+
+    Currently supports the graph topology built-in ``degree(alias, "rel")``,
+    which prebinds the relation's per-vertex out-degree as a numpy lookup
+    array. Other built-ins (neighbors / shortest_path / k_hop) still raise
+    ``NotImplementedError`` until a vectorised CSR-aware execution context
+    lands; the M2 gate doc tracks them as carry-overs.
+    """
+    if expr.name is None:
+        raise CaracalError(
+            code="CDB-6020", message=f"unsupported function call: {expr!r}"
+        )
+    if isinstance(expr.name, ta.Ident):
+        fn_name = expr.name.name
+    elif isinstance(expr.name, ta.QName):
+        fn_name = expr.name.value
+    else:
+        raise CaracalError(
+            code="CDB-6020", message=f"unsupported function call: {expr!r}"
+        )
+    if fn_name == "degree":
+        if len(expr.args) != 2:
+            raise CaracalError(
+                code="CDB-6020",
+                message="degree() takes exactly 2 args: degree(alias, \"relation\")",
+            )
+        alias_arg, rel_arg = expr.args
+        if not isinstance(alias_arg, ta.Var) or alias_arg.name is None:
+            raise CaracalError(
+                code="CDB-6020",
+                message="degree(): first arg must be a node alias",
+            )
+        alias_name = alias_arg.name.name
+        if alias_name not in aliases:
+            raise CaracalError(
+                code="CDB-6020",
+                message=f"degree(): unbound alias {alias_name!r}",
+            )
+        if not isinstance(rel_arg, ta.Literal) or not isinstance(rel_arg.value, str):
+            raise CaracalError(
+                code="CDB-6020",
+                message="degree(): second arg must be a string literal naming the relation",
+            )
+        if db is None:
+            raise CaracalError(
+                code="CDB-6020",
+                message="degree(): runtime requires an open database",
+            )
+        relation_local = rel_arg.value
+        lookup = _build_degree_lookup(db, relation_local)
+        import numpy as np
+        import pyarrow as pa
+
+        def _apply(col: pa.Array, _lookup: "np.ndarray" = lookup) -> pa.Array:
+            ids = np.asarray(col, dtype=np.uint64)
+            return pa.array(np.take(_lookup, ids), type=pa.uint64())
+
+        # The id column is resolved later by ``_resolve_alias_id_refs``, so
+        # emit the alias-id placeholder for the column ref.
+        return ("py_unary", _apply, ("alias_id", alias_name))
+    raise CaracalError(
+        code="CDB-6020",
+        message=(
+            f"function {fn_name!r} not yet supported in pattern queries; "
+            "graph topology built-ins beyond degree() remain a known M2 carry-over"
+        ),
+    )
+
+
+def _resolve_alias_id_refs(expr: object, id_column: str) -> object:
+    """Replace ``("alias_id", name)`` placeholders with concrete column refs."""
+    if not isinstance(expr, tuple) or not expr:
+        return expr
+    if expr[0] == "alias_id":
+        return ("col", f"{expr[1]}.{id_column}")
+    return tuple(_resolve_alias_id_refs(item, id_column) for item in expr)
+
+
+def _default_pattern_alias(expr: ta.Expr) -> str:
+    if isinstance(expr, ta.PathExpr) and expr.root is not None and len(expr.steps) == 1:
+        return expr.steps[0].name
+    if isinstance(expr, ta.Var) and expr.name is not None:
+        return expr.name.name
+    return "expr"
+
+
+# ---------------------------------------------------------------------------
+# Pattern plan → physical pipeline
+# ---------------------------------------------------------------------------
+
+
+def _build_pattern_pipeline(plan: _PatternPlan, db: Database) -> PhysicalOperator:
+    head_alias = plan.head_alias
+    id_column = plan.id_column
+
+    def _scan_for_alias(alias: str, cls: ClassDef) -> PhysicalOperator:
+        """Build a fresh prefixed NodeScan for the given alias.
+
+        Called once per *use site* (pull-based operators consume their child
+        exactly once), so each call returns an independent operator tree even
+        when the same alias appears multiple times in the pipeline DAG.
+        """
+        wanted = set(plan.alias_columns.get(alias, set()))
+        wanted.add(id_column)  # always need the join key
+        store = open_node_store(
+            db.bundle, class_iri=cls.iri, local_name=cls.local_name or _local(cls.iri)
+        )
+        available = set(store.schema.names)
+        # NodeScan also synthesises "nid" even though it's not in the manifest
+        # schema (per node_store.py), so include it without checking.
+        cols = sorted({c for c in wanted if c in available or c == "nid"})
+        scan = NodeScanOperator(store, columns=cols)
+        rename = {name: f"{alias}.{name}" for name in cols}
+        return RenameOperator(scan, rename)
+
+    # The pipeline DAG below is "linear with side scans": for each hop we
+    # consume the running ``pipeline`` once (as the HashJoin build side that
+    # carries seed properties forward) and start a *fresh* scan branch for
+    # the Expand seed and for the target-side property join. Because Expand
+    # only needs the id column, the seed branch is a tiny parallel scan, not
+    # a copy of the running pipeline.
+    pipeline: PhysicalOperator = _scan_for_alias(head_alias, plan.head_class)
+    head_alias_for_seed = head_alias
+    head_class_for_seed = plan.head_class
+    head_id_col = f"{head_alias}.{id_column}"
+
+    for hop in plan.hops:
+        src_alias_col = head_id_col
+        dst_alias_col = f"{hop.next_alias}.{id_column}"
+        # Build one Expand per relation in the (possibly unioned) rel-type set,
+        # then UnionAll them. Each Expand consumes its own fresh seed branch
+        # because PhysicalOperator is pull-based and single-consume.
+        expand_branches: list[PhysicalOperator] = []
+        for relation_local in hop.relation_locals:
+            forward, reverse = _readers_for_relation(db, relation_local, hop.direction)
+            seed_branch = _scan_for_alias(head_alias_for_seed, head_class_for_seed)
+            seed_for_expand = _ProjectKeyOperator(seed_branch, key=head_id_col)
+            expand_branches.append(
+                ExpandOperator(
+                    seed_for_expand,
+                    forward=forward,
+                    reverse=reverse,
+                    direction=hop.direction,  # type: ignore[arg-type]
+                    src_alias=src_alias_col,
+                    dst_alias=dst_alias_col,
+                    seed_column=head_id_col,
+                )
+            )
+        expand: PhysicalOperator = (
+            expand_branches[0]
+            if len(expand_branches) == 1
+            else UnionAllOperator(tuple(expand_branches))
+        )
+        # Recover head-side properties: build = the running pipeline (already
+        # carries every alias.field accumulated so far), probe = expand pairs.
+        head_with_expand = HashJoinOperator(
+            build=pipeline,
+            probe=expand,
+            build_key=head_id_col,
+            probe_key=head_id_col,
+        )
+        head_with_expand = DropColumnsOperator(head_with_expand, drop=(head_id_col,))
+
+        # Bring in target-side properties via a second hash join on the dst id.
+        target_scan = _scan_for_alias(hop.next_alias, hop.next_class)
+        with_target = HashJoinOperator(
+            build=head_with_expand,
+            probe=target_scan,
+            build_key=dst_alias_col,
+            probe_key=dst_alias_col,
+        )
+        with_target = DropColumnsOperator(with_target, drop=(dst_alias_col,))
+        pipeline = with_target
+        head_alias_for_seed = hop.next_alias
+        head_class_for_seed = hop.next_class
+        head_id_col = dst_alias_col  # next hop chains off the target id
+
+    # WHERE / RETURN: at this point columns are dotted (alias.field).
+    if plan.predicate is not None:
+        predicate = _resolve_alias_id_refs(plan.predicate, id_column)
+        pipeline = FilterOperator(pipeline, compile_expr(predicate))
+    if plan.projections:
+        compiled = [
+            (compile_expr(_resolve_alias_id_refs(expr, id_column)), name)
+            for expr, name in plan.projections
+        ]
+        pipeline = ProjectOperator(pipeline, compiled)
+    return pipeline
+
+
+class _ProjectKeyOperator(PhysicalOperator):
+    """Emit a single-column view of the upstream batches (for Expand seeds).
+
+    Expand's ``seed_column`` already supports any column name, but materialising
+    the entire upstream batch as the Expand seed would force a copy of every
+    seed property through the fan-out. This thin wrapper projects to just the
+    id column so Expand fans out a compact ``(uint64,)`` batch.
+    """
+
+    name = "ProjectKey"
+
+    def __init__(self, child: PhysicalOperator, *, key: str) -> None:
+        super().__init__()
+        self._child = child
+        self._key = key
+
+    def _open(self, ctx: ExecCtx) -> None:
+        self._child.open(ctx)
+
+    def _next_batch(self) -> pa.RecordBatch | None:
+        batch = self._child.next_batch()
+        if batch is None:
+            return None
+        col = batch.column(self._key)
+        return pa.RecordBatch.from_arrays([col], names=[self._key])
+
+    def _close(self) -> None:
+        self._child.close()
+
+
+def _readers_for_relation(
+    db: Database, relation_local: str, direction: str
+) -> tuple[CsrReader | None, CsrReader | None]:
+    cache: dict[str, dict[str, CsrReader]] = db._csr_cache  # type: ignore[attr-defined]
+    if relation_local in cache:
+        entry = cache[relation_local]
+        return entry.get("forward"), entry.get("reverse")
+
+    prop = _find_property_by_local_name(db, relation_local)
+    if prop is None:
+        raise CaracalError(
+            code="CDB-6023", message=f"property {relation_local!r} not in catalog"
+        )
+    edge_store = open_edge_store(
+        db.bundle, property_iri=prop.iri, local_name=prop.local_name or _local(prop.iri)
+    )
+
+    # Vertex space: we use the maximum nid+1 across all node stores so the
+    # CSR can hold either per-class nids or global gids — they share the same
+    # uint64 space and CSR builder only requires num_vertices to bound them.
+    num_vertices = _global_vertex_count(db)
+
+    csr_dir = db.bundle.child("graph", relation_local)
+    csr_dir.mkdir(parents=True, exist_ok=True)
+    forward_path = csr_dir / "forward.csr"
+    reverse_path = csr_dir / "reverse.csc"
+
+    forward: CsrReader | None = None
+    reverse: CsrReader | None = None
+    if direction in ("out", "both"):
+        if not forward_path.is_file():
+            build_csr(edge_store, num_vertices=num_vertices, out_path=forward_path, with_eids=True)
+        forward = CsrReader(forward_path)
+    if direction in ("in", "both"):
+        if not reverse_path.is_file():
+            build_csc(edge_store, num_vertices=num_vertices, out_path=reverse_path, with_eids=True)
+        reverse = CsrReader(reverse_path)
+
+    cache[relation_local] = {}
+    if forward is not None:
+        cache[relation_local]["forward"] = forward
+    if reverse is not None:
+        cache[relation_local]["reverse"] = reverse
+    return forward, reverse
+
+
+def _global_vertex_count(db: Database) -> int:
+    """Upper bound on the largest vertex id touched by any edge.
+
+    For graphs loaded via ``insert_node_table`` / ``insert_edge_table`` the
+    edge endpoints live in ``_cdb_gid`` space, so ``max(_cdb_gid)+1`` is the
+    right size. For single-class graphs that use ``nid`` directly we still
+    end up with at least ``max(nid)+1`` because both id spaces are dense and
+    bounded by the per-class store's ``next_nid``. Using the larger of the two
+    keeps both regimes working from one CSR.
+    """
+    n = 0
+    for class_name in list_node_stores(db.bundle):
+        cls = db._find_class(class_name)
+        store = open_node_store(
+            db.bundle, class_iri=cls.iri, local_name=cls.local_name or _local(cls.iri)
+        )
+        if _INTERNAL_GID_COLUMN in store.schema.names:
+            table = store.to_table(columns=[_INTERNAL_GID_COLUMN])
+            if table.num_rows:
+                n = max(n, int(table.column(_INTERNAL_GID_COLUMN).to_pylist()[-1]) + 1)
+                # also scan all in case order is not monotonic
+                arr = table.column(_INTERNAL_GID_COLUMN).to_pylist()
+                if arr:
+                    n = max(n, int(max(arr)) + 1)
+        n = max(n, store.manifest.next_nid)
+    return n
 
 
 # ---------------------------------------------------------------------------
