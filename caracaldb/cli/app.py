@@ -123,14 +123,16 @@ def diff(
 
 @app.command()
 def view(
-    path: Path = typer.Argument(..., help="Path to a `.crcl` packed file or bundle"),  # noqa: B008
+    path: Path = typer.Argument(  # noqa: B008
+        Path("data"), help="Path to a data directory, `.crcl` packed file, or bundle"
+    ),
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address"),  # noqa: B008
     port: int = typer.Option(8765, "--port", help="TCP port"),  # noqa: B008
     no_browser: bool = typer.Option(  # noqa: B008
         False, "--no-browser", help="Do not auto-open a browser tab"
     ),
 ) -> None:
-    """Launch a local web viewer for a `.crcl` file or bundle."""
+    """Launch a local web viewer for a data directory or `.crcl` file."""
     rc = cmd_view(path, host=host, port=port, open_browser=not no_browser)
     raise typer.Exit(rc)
 
