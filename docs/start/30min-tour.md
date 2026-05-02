@@ -1,7 +1,7 @@
 ---
 applies_to: v0.2.x
 status: experimental
-last_updated: 2026-04-30
+last_updated: 2026-05-03
 engine_status: python-reference; rust-engine-planned
 ---
 
@@ -121,11 +121,31 @@ db.insert_triples(
 
 ## 7. Think In Snapshots
 
-Snapshots name a read view by LSN. The language reserves `AS_OF` for snapshot-bound reads, while the storage layer already has a named snapshot registry.
+Snapshots name a read view by LSN. Create the snapshot first, then reference
+that name from `AS_OF SNAPSHOT` reads.
+
+```python
+snap = db.create_snapshot("release-2026-04")
+print(snap.name, snap.lsn)
+```
 
 ```tuft
 MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
 RETURN g.symbol
+```
+
+```python
+rows = db.sql("""
+MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
+RETURN g.symbol
+""").rows()
+print(rows)
+```
+
+Release the named snapshot when the read view is no longer needed.
+
+```python
+db.release_snapshot("release-2026-04")
 ```
 
 ## 8. Hand Off To Analytics Or ML
