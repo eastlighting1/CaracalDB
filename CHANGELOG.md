@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.4] - 2026-05-03
+
+Patch release for snapshot reads and storage scan cleanup.
+
+### Added
+
+- Added named snapshot management through `create_snapshot`, `list_snapshots`,
+  and `release_snapshot`.
+- Added Tuft `AS_OF SNAPSHOT 'name'` reads with node and edge visibility
+  filtering against snapshot LSNs.
+- Added coverage for successful snapshot reads, missing snapshot diagnostics,
+  and post-snapshot node/edge filtering.
+
+### Changed
+
+- Updated the snapshot guide to describe the supported `AS_OF SNAPSHOT`
+  workflow and its current schema-level caveat.
+- Streamlined node and edge batch selection during storage scans.
+
 ## [0.2.3] - 2026-05-02
 
 Patch release for the local `.crcl` web viewer workflow.

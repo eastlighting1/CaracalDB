@@ -17,7 +17,7 @@ RELEASE_VERSION = caracaldb.__version__
 
 
 def test_version_is_current_release() -> None:
-    assert RELEASE_VERSION == "0.2.3"
+    assert RELEASE_VERSION == "0.2.4"
 
 
 def test_changelog_contains_release_section() -> None:
