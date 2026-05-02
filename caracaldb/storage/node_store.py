@@ -250,10 +250,7 @@ class NodeStore:
             for batch in reader.record_batches():
                 if snapshot_lsn is not None:
                     batch = _filter_visible(batch, snapshot_lsn)
-                if columns is not None:
-                    batch = batch.select(columns)
-                else:
-                    batch = _select_public(batch)
+                batch = batch.select(columns) if columns is not None else _select_public(batch)
                 yield batch
 
     def to_table(
