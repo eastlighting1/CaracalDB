@@ -33,6 +33,8 @@ from caracaldb.api import Database
 from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.storage.pack import is_packed
 
+_INTERNAL_COLUMNS = {"_created_lsn", "_deleted_lsn"}
+
 
 def _find_crcl_files(root: Path) -> list[Path]:
     if root.is_file() or root.suffix == ".crcl":
@@ -98,6 +100,9 @@ def _jsonify(value: Any) -> Any:
 
 
 def _table_to_payload(table: pa.Table, *, limit: int, offset: int) -> dict[str, Any]:
+    visible_columns = [name for name in table.column_names if name not in _INTERNAL_COLUMNS]
+    if visible_columns != table.column_names:
+        table = table.select(visible_columns)
     total = table.num_rows
     if offset:
         table = table.slice(offset)
@@ -127,10 +132,15 @@ def _all_classes_to_payload(db: Database, *, limit: int, offset: int) -> dict[st
         except CaracalError:
             continue
         for field in table.schema:
-            if field.name not in columns:
+            if field.name not in _INTERNAL_COLUMNS and field.name not in columns:
                 columns.append(field.name)
         for row in table.to_pylist():
-            rows.append({"_class": local, **row})
+            rows.append(
+                {
+                    "_class": local,
+                    **{key: value for key, value in row.items() if key not in _INTERNAL_COLUMNS},
+                }
+            )
 
     total = len(rows)
     visible_rows = rows[offset:]
@@ -184,7 +194,9 @@ def _bundle_metadata(db: Database, source: Path) -> dict[str, Any]:
             num_rows = store.num_rows
             schema = store.schema
             columns = [
-                {"name": f.name, "type": str(f.type), "nullable": f.nullable} for f in schema
+                {"name": f.name, "type": str(f.type), "nullable": f.nullable}
+                for f in schema
+                if f.name not in _INTERNAL_COLUMNS
             ]
         except CaracalError:
             num_rows = 0
@@ -438,6 +450,9 @@ _INDEX_HTML = r"""<!doctype html>
       <div class="toolbar">
         <button class="btn primary" id="btn-run"><span class="play">&#9654;</span>Run</button>
         <button class="btn" id="btn-clear">Clear</button>
+        <select id="snapshot-picker" class="btn" title="Insert AS_OF SNAPSHOT clause">
+          <option value="">AS_OF: (latest)</option>
+        </select>
         <span class="query-status" id="query-status"></span>
       </div>
       <div class="editor"><div class="editor-shell">
@@ -533,6 +548,7 @@ async function loadInfo() {
   document.getElementById("stat-rows").textContent = info.total_rows || 0;
   document.getElementById("stat-version").textContent = info.format_version ? `v${info.format_version}` : "v-";
   hydrateClassSelects();
+  await loadSnapshots();
 
   renderMetadata(info);
   if (state.classes.length) {
@@ -548,6 +564,20 @@ async function loadInfo() {
   }
   updateLineNumbers();
   if (state.classes.length) runQuery();
+}
+
+async function loadSnapshots() {
+  const select = document.getElementById("snapshot-picker");
+  if (!select) return;
+  try {
+    const r = await fetch("/api/snapshots");
+    const payload = await r.json();
+    const snaps = (payload && payload.snapshots) || [];
+    select.innerHTML = '<option value="">AS_OF: (latest)</option>' +
+      snaps.map(s => `<option value="${escapeHtml(s.name)}">AS_OF: ${escapeHtml(s.name)} @lsn ${s.lsn_high}</option>`).join("");
+  } catch (e) {
+    select.innerHTML = '<option value="">AS_OF: (latest)</option>';
+  }
 }
 
 async function loadFiles() {
@@ -720,6 +750,25 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
   document.querySelectorAll(".pane").forEach(p => p.classList.toggle("active",
     p.id === "pane-" + t.dataset.tab));
 }));
+
+document.getElementById("snapshot-picker").addEventListener("change", e => {
+  const name = e.target.value;
+  const ta = document.getElementById("query-text");
+  let text = ta.value || "";
+  // Drop any existing AS_OF clause first (works across SNAPSHOT 'x' or DATETIME '...').
+  text = text.replace(/\s*AS_OF\s+(SNAPSHOT|DATETIME)\s+'[^']*'/i, "");
+  if (name) {
+    // Insert after the first MATCH (...) clause; before RETURN/WHERE/LIMIT if present.
+    const re = /MATCH\s*\([^)]*\)(?:\s*-\s*\[[^\]]*\]\s*-\s*(?:>|<)?\s*\([^)]*\))*/i;
+    const m = text.match(re);
+    if (m) {
+      const insertAt = m.index + m[0].length;
+      text = text.slice(0, insertAt) + ` AS_OF SNAPSHOT '${name}'` + text.slice(insertAt);
+    }
+  }
+  ta.value = text;
+  updateLineNumbers();
+});
 
 document.getElementById("btn-run").addEventListener("click", runQuery);
 document.getElementById("btn-clear").addEventListener("click", () => {
@@ -907,6 +956,25 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
                 try:
                     db, _source = state.require_db()
                     self._send_json(_all_classes_to_payload(db, limit=limit, offset=offset))
+                except CaracalError as exc:
+                    self._send_json({"error": f"{exc.code}: {exc.message}"}, status=400)
+                return
+            if route == "/api/snapshots":
+                try:
+                    db, _source = state.require_db()
+                    self._send_json(
+                        {
+                            "snapshots": [
+                                {
+                                    "name": s.name,
+                                    "lsn_high": s.lsn_high,
+                                    "created_at": s.created_at,
+                                    "refcount": s.refcount,
+                                }
+                                for s in db.list_snapshots()
+                            ]
+                        }
+                    )
                 except CaracalError as exc:
                     self._send_json({"error": f"{exc.code}: {exc.message}"}, status=400)
                 return

@@ -13,7 +13,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -23,6 +23,7 @@ import pyarrow as pa
 if TYPE_CHECKING:
     import numpy as np
 
+from caracaldb.exec.as_of import apply_as_of, resolve_as_of
 from caracaldb.exec.expr import compile_expr
 from caracaldb.exec.operator import ExecCtx, PhysicalOperator, run_pipeline
 from caracaldb.exec.operators import (
@@ -46,8 +47,16 @@ from caracaldb.onto.catalog import Catalog, ClassDef, load_catalog, save_catalog
 from caracaldb.onto.closure import ClassClosureIndex
 from caracaldb.storage import Bundle, create_bundle, open_bundle
 from caracaldb.storage.edge_store import list_edge_stores, open_edge_store
+from caracaldb.storage.manifest import MANIFEST_NAME
+from caracaldb.storage.mvcc import SnapshotId
 from caracaldb.storage.node_store import NodeStore, list_node_stores, open_node_store
 from caracaldb.storage.pack import is_packed, pack_bundle
+from caracaldb.storage.snapshot import (
+    SnapshotEntry,
+    create_snapshot,
+    list_snapshots,
+    release_snapshot,
+)
 
 _INTERNAL_IRI_PREFIX = "caracaldb:local:"
 _INTERNAL_GID_COLUMN = "_cdb_gid"
@@ -146,14 +155,14 @@ class Connection:
         if _is_multi_element_pattern(query):
             plan_p = _compile_pattern_query(query, self._db)
             op = _build_pattern_pipeline(plan_p, self._db)
-            ctx = ExecCtx()
+            ctx = apply_as_of(ExecCtx(), plan_p.snapshot)
             batches = list(run_pipeline(op, ctx))
             if plan_p.limit is not None:
                 batches = _apply_limit(batches, plan_p.limit)
             return Result(batches)
         plan = _compile_query(query, self._db)
         op = _build_pipeline(plan, self._db)
-        ctx = ExecCtx()
+        ctx = apply_as_of(ExecCtx(), plan.snapshot)
         batches = list(run_pipeline(op, ctx))
         if plan.limit is not None:
             batches = _apply_limit(batches, plan.limit)
@@ -247,7 +256,7 @@ class Database:
             local_name=cls.local_name or _local(cls.iri),
             create=True,
         )
-        return store.append(pa.Table.from_pylist(payload))
+        return store.append(pa.Table.from_pylist(payload), created_lsn=self._next_lsn())
 
     def insert_node_table(
         self,
@@ -334,7 +343,7 @@ class Database:
                 local_name=prop.local_name or _local(prop.iri),
                 create=True,
             )
-            refs[relation] = store.append(_edge_table(group))
+            refs[relation] = store.append(_edge_table(group), created_lsn=self._next_lsn())
         return refs
 
     def insert_triples(
@@ -579,6 +588,31 @@ class Database:
             self._bundle, class_iri=cls.iri, local_name=cls.local_name or _local(cls.iri)
         )
 
+    def create_snapshot(self, name: str) -> SnapshotId:
+        """Pin a named snapshot at the current bundle LSN.
+
+        The snapshot becomes referenceable from Tuft as
+        ``MATCH (...) AS_OF SNAPSHOT 'name' ...``. Node and edge rows
+        inserted after the snapshot are hidden from ``AS_OF`` reads.
+        """
+        return create_snapshot(self._bundle, name)
+
+    def list_snapshots(self) -> list[SnapshotEntry]:
+        """Return all named snapshots stored in the bundle, ordered by LSN."""
+        return list_snapshots(self._bundle)
+
+    def release_snapshot(self, name: str) -> bool:
+        """Decrement a snapshot's refcount; remove it on the final release."""
+        return release_snapshot(self._bundle, name)
+
+    def _next_lsn(self) -> int:
+        """Advance the bundle's logical write clock and persist it."""
+        next_lsn = self._bundle.manifest.last_lsn + 1
+        manifest = replace(self._bundle.manifest, last_lsn=next_lsn)
+        manifest.write_atomic(self._bundle.path / MANIFEST_NAME)
+        object.__setattr__(self._bundle, "manifest", manifest)
+        return next_lsn
+
     def _find_class(self, iri: str) -> ClassDef:
         cls = self._catalog.class_by_iri(iri)
         if cls is None:
@@ -797,6 +831,7 @@ class _CompiledQuery:
     projections: tuple[tuple[object, str], ...]
     limit: int | None
     closure_base_iri: str | None = None
+    snapshot: SnapshotId | None = None
 
 
 def _compile_query(query: ta.Query, db: Database) -> _CompiledQuery:
@@ -849,6 +884,8 @@ def _compile_query(query: ta.Query, db: Database) -> _CompiledQuery:
     if query.modifiers.limit is not None:
         limit = _eval_int_literal(query.modifiers.limit, "LIMIT")
 
+    snapshot = resolve_as_of(db.bundle, match_clause.as_of)
+
     return _CompiledQuery(
         class_iri=cls.iri,
         local_name=cls.local_name or _local(cls.iri),
@@ -858,6 +895,7 @@ def _compile_query(query: ta.Query, db: Database) -> _CompiledQuery:
         projections=tuple(projections),
         limit=limit,
         closure_base_iri=closure_base_iri,
+        snapshot=snapshot,
     )
 
 
@@ -1072,6 +1110,7 @@ class _PatternPlan:
     projections: tuple[tuple[object, str], ...]
     limit: int | None
     id_column: str  # "_cdb_gid" or "nid"
+    snapshot: SnapshotId | None = None
 
 
 def _compile_pattern_query(query: ta.Query, db: Database) -> _PatternPlan:
@@ -1184,6 +1223,8 @@ def _compile_pattern_query(query: ta.Query, db: Database) -> _PatternPlan:
     if query.modifiers.limit is not None:
         limit = _eval_int_literal(query.modifiers.limit, "LIMIT")
 
+    snapshot = resolve_as_of(db.bundle, match_clause.as_of)
+
     return _PatternPlan(
         head_alias=head_alias,
         head_class=head_class,
@@ -1193,6 +1234,7 @@ def _compile_pattern_query(query: ta.Query, db: Database) -> _PatternPlan:
         projections=tuple(projections),
         limit=limit,
         id_column=id_column,
+        snapshot=snapshot,
     )
 
 
@@ -1474,8 +1516,14 @@ def _build_pattern_pipeline(plan: _PatternPlan, db: Database) -> PhysicalOperato
         # then UnionAll them. Each Expand consumes its own fresh seed branch
         # because PhysicalOperator is pull-based and single-consume.
         expand_branches: list[PhysicalOperator] = []
+        snapshot_lsn = plan.snapshot.lsn_high if plan.snapshot is not None else None
         for relation_local in hop.relation_locals:
-            forward, reverse = _readers_for_relation(db, relation_local, hop.direction)
+            forward, reverse = _readers_for_relation(
+                db,
+                relation_local,
+                hop.direction,
+                snapshot_lsn=snapshot_lsn,
+            )
             seed_branch = _scan_for_alias(head_alias_for_seed, head_class_for_seed)
             seed_for_expand = _ProjectKeyOperator(seed_branch, key=head_id_col)
             expand_branches.append(
@@ -1562,11 +1610,16 @@ class _ProjectKeyOperator(PhysicalOperator):
 
 
 def _readers_for_relation(
-    db: Database, relation_local: str, direction: str
+    db: Database,
+    relation_local: str,
+    direction: str,
+    *,
+    snapshot_lsn: int | None = None,
 ) -> tuple[CsrReader | None, CsrReader | None]:
     cache: dict[str, dict[str, CsrReader]] = db._csr_cache  # type: ignore[attr-defined]
-    if relation_local in cache:
-        entry = cache[relation_local]
+    cache_key = f"{relation_local}@{snapshot_lsn}" if snapshot_lsn is not None else relation_local
+    if cache_key in cache:
+        entry = cache[cache_key]
         return entry.get("forward"), entry.get("reverse")
 
     prop = _find_property_by_local_name(db, relation_local)
@@ -1583,25 +1636,29 @@ def _readers_for_relation(
 
     csr_dir = db.bundle.child("graph", relation_local)
     csr_dir.mkdir(parents=True, exist_ok=True)
-    forward_path = csr_dir / "forward.csr"
-    reverse_path = csr_dir / "reverse.csc"
+    suffix = f".snap{snapshot_lsn}" if snapshot_lsn is not None else ""
+    forward_path = csr_dir / f"forward{suffix}.csr"
+    reverse_path = csr_dir / f"reverse{suffix}.csc"
+    edge_input = (
+        edge_store.to_table(snapshot_lsn=snapshot_lsn) if snapshot_lsn is not None else edge_store
+    )
 
     forward: CsrReader | None = None
     reverse: CsrReader | None = None
     if direction in ("out", "both"):
         if not forward_path.is_file():
-            build_csr(edge_store, num_vertices=num_vertices, out_path=forward_path, with_eids=True)
+            build_csr(edge_input, num_vertices=num_vertices, out_path=forward_path, with_eids=True)
         forward = CsrReader(forward_path)
     if direction in ("in", "both"):
         if not reverse_path.is_file():
-            build_csc(edge_store, num_vertices=num_vertices, out_path=reverse_path, with_eids=True)
+            build_csc(edge_input, num_vertices=num_vertices, out_path=reverse_path, with_eids=True)
         reverse = CsrReader(reverse_path)
 
-    cache[relation_local] = {}
+    cache[cache_key] = {}
     if forward is not None:
-        cache[relation_local]["forward"] = forward
+        cache[cache_key]["forward"] = forward
     if reverse is not None:
-        cache[relation_local]["reverse"] = reverse
+        cache[cache_key]["reverse"] = reverse
     return forward, reverse
 
 

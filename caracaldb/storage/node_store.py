@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
 from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.storage.bundle import Bundle
@@ -30,8 +31,11 @@ from caracaldb.storage.column_store import (
 NODE_MANIFEST_NAME = "_manifest.json"
 CHUNKS_DIRNAME = "chunks"
 NID_COLUMN = "nid"
+CREATED_LSN_COLUMN = "_created_lsn"
+DELETED_LSN_COLUMN = "_deleted_lsn"
 _LOCAL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]*$")
 __all_local_name_re__ = _LOCAL_NAME_RE
+_MVCC_COLUMNS = {CREATED_LSN_COLUMN, DELETED_LSN_COLUMN}
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,15 +109,28 @@ def _schema_to_json(schema: pa.Schema) -> str:
     return json.dumps(fields, sort_keys=True)
 
 
+def _public_names(schema: pa.Schema) -> list[str]:
+    return [name for name in schema.names if name not in _MVCC_COLUMNS]
+
+
+def _select_public(batch: pa.RecordBatch) -> pa.RecordBatch:
+    names = _public_names(batch.schema)
+    if names == batch.schema.names:
+        return batch
+    return batch.select(names)
+
+
 def _ensure_compatible(expected: pa.Schema, actual: pa.Schema) -> None:
-    if expected.names != actual.names:
+    expected_names = _public_names(expected)
+    actual_names = _public_names(actual)
+    if expected_names != actual_names:
         raise CaracalError(
             code="CDB-7011",
             message=(
-                f"node batch schema mismatch: expected columns {expected.names}, got {actual.names}"
+                f"node batch schema mismatch: expected columns {expected_names}, got {actual_names}"
             ),
         )
-    for name in expected.names:
+    for name in expected_names:
         if expected.field(name).type != actual.field(name).type:
             raise CaracalError(
                 code="CDB-7011",
@@ -156,7 +173,12 @@ class NodeStore:
     def next_nid(self) -> int:
         return self.manifest.next_nid
 
-    def append(self, batch: pa.RecordBatch | pa.Table) -> NodeChunkRef:
+    def append(
+        self,
+        batch: pa.RecordBatch | pa.Table,
+        *,
+        created_lsn: int = 0,
+    ) -> NodeChunkRef:
         """Append a batch of property rows, assigning fresh ``nid`` values."""
         if isinstance(batch, pa.Table):
             if batch.num_rows == 0:
@@ -171,13 +193,26 @@ class NodeStore:
                 code="CDB-7011",
                 message="node batches must not include a 'nid' column; it is assigned by the store",
             )
+        for name in _MVCC_COLUMNS:
+            if name in record_batch.schema.names:
+                raise CaracalError(
+                    code="CDB-7011",
+                    message=f"node batches must not include reserved column {name!r}",
+                )
 
         start_nid = self.manifest.next_nid
         end_nid = start_nid + record_batch.num_rows
         nid_array = pa.array(range(start_nid, end_nid), type=pa.uint64())
+        created_array = pa.array([created_lsn] * record_batch.num_rows, type=pa.uint64())
+        deleted_array = pa.nulls(record_batch.num_rows, type=pa.uint64())
         with_nid = pa.RecordBatch.from_arrays(
-            [nid_array, *record_batch.columns],
-            names=[NID_COLUMN, *record_batch.schema.names],
+            [nid_array, *record_batch.columns, created_array, deleted_array],
+            names=[
+                NID_COLUMN,
+                *record_batch.schema.names,
+                CREATED_LSN_COLUMN,
+                DELETED_LSN_COLUMN,
+            ],
         )
 
         if self.manifest.chunks:
@@ -204,19 +239,33 @@ class NodeStore:
         self._persist_manifest()
         return ref
 
-    def scan(self, *, columns: list[str] | None = None) -> Iterator[pa.RecordBatch]:
+    def scan(
+        self,
+        *,
+        columns: list[str] | None = None,
+        snapshot_lsn: int | None = None,
+    ) -> Iterator[pa.RecordBatch]:
         for chunk in self.manifest.chunks:
             reader = ColumnReader(self.root / chunk.path)
             for batch in reader.record_batches():
+                if snapshot_lsn is not None:
+                    batch = _filter_visible(batch, snapshot_lsn)
                 if columns is not None:
                     batch = batch.select(columns)
+                else:
+                    batch = _select_public(batch)
                 yield batch
 
-    def to_table(self, *, columns: list[str] | None = None) -> pa.Table:
-        batches = list(self.scan(columns=columns))
+    def to_table(
+        self,
+        *,
+        columns: list[str] | None = None,
+        snapshot_lsn: int | None = None,
+    ) -> pa.Table:
+        batches = list(self.scan(columns=columns, snapshot_lsn=snapshot_lsn))
         if not batches:
             schema = (
-                self.schema
+                pa.schema([field for field in self.schema if field.name not in _MVCC_COLUMNS])
                 if columns is None
                 else self.schema.select([self.schema.get_field_index(name) for name in columns])
             )
@@ -245,6 +294,26 @@ def load_node_manifest(root: Path) -> NodeStoreManifest:
     if not target.is_file():
         raise CaracalError(code="CDB-7012", message=f"node store manifest missing: {target}")
     return NodeStoreManifest.from_json(json.loads(target.read_text(encoding="utf-8")))
+
+
+def _filter_visible(batch: pa.RecordBatch, snapshot_lsn: int) -> pa.RecordBatch:
+    names = batch.schema.names
+    if CREATED_LSN_COLUMN not in names:
+        return batch
+    created = batch.column(CREATED_LSN_COLUMN)
+    deleted = (
+        batch.column(DELETED_LSN_COLUMN)
+        if DELETED_LSN_COLUMN in names
+        else pa.nulls(batch.num_rows, type=pa.uint64())
+    )
+    created_ok = pc.less_equal(created, pa.scalar(snapshot_lsn, type=pa.uint64()))
+    deleted_null = pc.is_null(deleted)
+    deleted_after = pc.fill_null(
+        pc.greater(deleted, pa.scalar(snapshot_lsn, type=pa.uint64())),
+        False,
+    )
+    visible = pc.and_(created_ok, pc.or_(deleted_null, deleted_after))
+    return batch.filter(visible)
 
 
 def open_node_store(
@@ -290,6 +359,8 @@ def list_node_stores(bundle: Bundle) -> list[str]:
 
 __all__ = [
     "NID_COLUMN",
+    "CREATED_LSN_COLUMN",
+    "DELETED_LSN_COLUMN",
     "NodeChunkRef",
     "NodeStore",
     "NodeStoreManifest",

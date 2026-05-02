@@ -38,7 +38,11 @@ class NodeScanOperator(PhysicalOperator):
         self._iter = None
 
     def _open(self, ctx: ExecCtx) -> None:
-        self._iter = self._store.scan(columns=self._columns)
+        snapshot_lsn = ctx.metadata.get("snapshot_lsn")
+        self._iter = self._store.scan(
+            columns=self._columns,
+            snapshot_lsn=int(snapshot_lsn) if snapshot_lsn is not None else None,
+        )
 
     def _next_batch(self) -> pa.RecordBatch | None:
         assert self._iter is not None

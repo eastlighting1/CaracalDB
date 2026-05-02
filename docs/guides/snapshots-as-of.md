@@ -1,7 +1,7 @@
 ---
-applies_to: v0.1.x
-status: experimental
-last_updated: 2026-04-28
+applies_to: v0.2.x
+status: shipped-partial
+last_updated: 2026-05-02
 engine_status: python-reference; rust-engine-planned
 ---
 
@@ -9,45 +9,96 @@ engine_status: python-reference; rust-engine-planned
 
 Use this guide when reads need to refer to a named, stable graph view.
 
-!!! warning "Experimental surface"
-    Named snapshot registry helpers exist in the Python reference implementation, but full `AS_OF` query execution is still an evolving surface. Verify support in the API page for your installed version before using this in production workflows.
+!!! note "Snapshot reads in v0.2.x"
+    `AS_OF SNAPSHOT 'name'` is enforced for node and edge rows written
+    through the public `Database` API:
+
+    1. `MATCH (...) AS_OF SNAPSHOT 'name'` parses into the Tuft AST.
+    2. `db.create_snapshot(...)`, `db.list_snapshots()`, and
+       `db.release_snapshot(...)` manage named snapshots.
+    3. A missing snapshot name raises `CDB-8013` from `Connection.sql(...)`
+       instead of being silently ignored.
+    4. Node and edge rows inserted after the snapshot LSN are hidden from
+       `AS_OF` reads.
+
+    Catalog definitions are not yet versioned. A class or property created
+    after a snapshot may still be discoverable by the planner, even though
+    rows written after the snapshot are filtered out.
 
 ## Problem
 
-Training, release validation, and reproducible analytics need a read boundary that does not move while writes continue.
+Training, release validation, and reproducible analytics need a read
+boundary that does not move while writes continue.
 
 ## Steps
 
-1. Create a named snapshot.
+1. Create a named snapshot from the public `Database` API; no need to
+   import from `caracaldb.storage.snapshot`:
 
-```python
-from caracaldb.storage.snapshot import create_snapshot
+   ```python
+   import caracaldb as cdb
 
-snapshot = create_snapshot(bundle, "release-2026-04")
-```
-2. Use `AS_OF` in Tuft to express the read boundary.
+   with cdb.connect("graph.crcl") as db:
+       snap = db.create_snapshot("release-2026-04")
+   ```
 
-```tuft
-MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
-RETURN g.symbol
-```
-3. Release the snapshot when it is no longer needed.
+2. Reference the snapshot in Tuft:
 
-```python
-from caracaldb.storage.snapshot import release_snapshot
+   ```tuft
+   MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
+   RETURN g.symbol
+   ```
 
-release_snapshot(bundle, "release-2026-04")
-```
+   If the name is unknown the call raises `CaracalError` with code
+   `CDB-8013` (`snapshot not found: 'release-2026-04'`).
+
+3. List the registered snapshots:
+
+   ```python
+   for entry in db.list_snapshots():
+       print(entry.name, entry.lsn_high, entry.created_at, entry.refcount)
+   ```
+
+4. Release the snapshot when it is no longer needed. The final release
+   removes the entry from the registry:
+
+   ```python
+   db.release_snapshot("release-2026-04")
+   ```
+
 ## Verification
 
-The snapshot registry should list the name, LSN high-water mark, creation time, and reference count.
+After step 1, `db.list_snapshots()` should report the new snapshot's
+name, LSN high-water mark, creation time, and reference count. After
+step 4 (and any other matching releases), the entry disappears.
+
+Rows inserted after the snapshot should be absent from `AS_OF` reads:
+
+```python
+with cdb.connect("graph.crcl") as db:
+    db.define_class("Gene")
+    db.insert_nodes("Gene", [{"symbol": "TP53"}])
+    db.create_snapshot("v1")
+    db.insert_nodes("Gene", [{"symbol": "BRCA1"}])
+
+    rows = db.sql(
+        "MATCH (g:Gene) AS_OF SNAPSHOT 'v1' RETURN g.symbol"
+    ).rows()
+    assert rows == [{"symbol": "TP53"}]
+```
 
 ## Common Pitfalls
 
-- `AS_OF` syntax can exist before every query path supports snapshot execution.
-- Snapshot names must be non-empty and unique.
-- Releasing a snapshot decrements its reference count and can remove it.
+- A missing snapshot name raises `CDB-8013` rather than silently falling
+  back to a latest read.
+- `AS_OF DATETIME '...'` parses but raises `CDB-6021`; datetime-based
+  resolution is reserved for the M4 cycle.
+- Snapshot visibility applies to node and edge rows. Catalog metadata is
+  still latest-version only.
+- Bundles written before row-version metadata existed remain readable; their
+  older rows are treated as visible to snapshots.
 
 ## Related ADR
 
-Snapshot retention and garbage collection should be documented before long-lived production snapshots are encouraged.
+Snapshot retention, garbage collection, and catalog-version visibility are
+still tracked as follow-ups.

@@ -14,7 +14,7 @@ from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.lang.tuft import ast as ta
 from caracaldb.storage.bundle import Bundle
 from caracaldb.storage.mvcc import SnapshotId
-from caracaldb.storage.snapshot import open_snapshot
+from caracaldb.storage.snapshot import peek_snapshot
 
 
 def resolve_as_of(bundle: Bundle, node: ta.AsOf | None) -> SnapshotId | None:
@@ -22,7 +22,7 @@ def resolve_as_of(bundle: Bundle, node: ta.AsOf | None) -> SnapshotId | None:
         return None
     kind = (node.kind or "").upper()
     if kind == "SNAPSHOT":
-        return open_snapshot(bundle, node.value)
+        return peek_snapshot(bundle, node.value)
     if kind == "DATETIME":
         # Datetime-based snapshot resolution lands when MVCC tracks per-row
         # commit timestamps; surface a clear error so callers see the gap.

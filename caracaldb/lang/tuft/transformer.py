@@ -379,9 +379,15 @@ class TuftTransformer(Transformer[Any, Any]):
         return ta.DeleteClause(exprs=items[-1])
 
     def as_of(self, items: list[Any]) -> ta.AsOf:
-        return ta.AsOf(
-            kind="snapshot" if isinstance(items[0], str) else "datetime", value=_text(items[0])
-        )
+        node = items[0]
+        # Both ``string_lit`` and ``datetime_lit`` produce ``ta.Literal``; the
+        # underlying ``.value`` is the unquoted payload (snapshot name or
+        # ISO-8601 datetime). We carry that scalar through verbatim so engine
+        # consumers don't have to re-parse a Literal repr.
+        if isinstance(node, ta.Literal):
+            kind = "datetime" if node.kind is ta.LiteralKind.DATETIME else "snapshot"
+            return ta.AsOf(kind=kind, value=str(node.value))
+        return ta.AsOf(kind="snapshot" if isinstance(node, str) else "datetime", value=_text(node))
 
     def modifiers(self, items: list[Any]) -> ta.Modifiers:
         order_by: tuple[ta.OrderItem, ...] = ()

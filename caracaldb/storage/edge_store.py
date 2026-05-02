@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
 from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.storage.bundle import Bundle
@@ -31,7 +32,10 @@ CHUNKS_DIRNAME = "chunks"
 EID_COLUMN = "eid"
 SRC_COLUMN = "src"
 DST_COLUMN = "dst"
+CREATED_LSN_COLUMN = "_created_lsn"
+DELETED_LSN_COLUMN = "_deleted_lsn"
 REQUIRED_EDGE_COLUMNS = (SRC_COLUMN, DST_COLUMN)
+_MVCC_COLUMNS = {CREATED_LSN_COLUMN, DELETED_LSN_COLUMN}
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +116,12 @@ def _validate_batch(batch: pa.RecordBatch, *, established_schema: pa.Schema | No
             code="CDB-7021",
             message="edge batches must not include an 'eid' column; it is assigned by the store",
         )
+    for name in _MVCC_COLUMNS:
+        if name in names:
+            raise CaracalError(
+                code="CDB-7021",
+                message=f"edge batches must not include reserved column {name!r}",
+            )
     for required in REQUIRED_EDGE_COLUMNS:
         if required not in names:
             raise CaracalError(
@@ -126,14 +136,16 @@ def _validate_batch(batch: pa.RecordBatch, *, established_schema: pa.Schema | No
             message="edge 'src' and 'dst' must be UInt64 (nid) columns",
         )
     if established_schema is not None:
-        if established_schema.names != names:
+        established_names = [name for name in established_schema.names if name not in _MVCC_COLUMNS]
+        actual_names = [name for name in names if name not in _MVCC_COLUMNS]
+        if established_names != actual_names:
             raise CaracalError(
                 code="CDB-7021",
                 message=(
-                    f"edge batch column drift: expected {established_schema.names}, got {names}"
+                    f"edge batch column drift: expected {established_names}, got {actual_names}"
                 ),
             )
-        for name in names:
+        for name in actual_names:
             if established_schema.field(name).type != batch.schema.field(name).type:
                 raise CaracalError(
                     code="CDB-7021",
@@ -142,6 +154,17 @@ def _validate_batch(batch: pa.RecordBatch, *, established_schema: pa.Schema | No
                         f"{established_schema.field(name).type} vs {batch.schema.field(name).type}"
                     ),
                 )
+
+
+def _public_names(schema: pa.Schema) -> list[str]:
+    return [name for name in schema.names if name not in _MVCC_COLUMNS]
+
+
+def _select_public(batch: pa.RecordBatch) -> pa.RecordBatch:
+    names = _public_names(batch.schema)
+    if names == batch.schema.names:
+        return batch
+    return batch.select(names)
 
 
 class EdgeStore:
@@ -177,7 +200,12 @@ class EdgeStore:
             ]
         )
 
-    def append(self, batch: pa.RecordBatch | pa.Table) -> EdgeChunkRef:
+    def append(
+        self,
+        batch: pa.RecordBatch | pa.Table,
+        *,
+        created_lsn: int = 0,
+    ) -> EdgeChunkRef:
         if isinstance(batch, pa.Table):
             if batch.num_rows == 0:
                 raise CaracalError(code="CDB-7021", message="cannot append empty edge batch")
@@ -197,9 +225,16 @@ class EdgeStore:
         start_eid = self.manifest.next_eid
         end_eid = start_eid + record_batch.num_rows
         eid_array = pa.array(range(start_eid, end_eid), type=pa.uint64())
+        created_array = pa.array([created_lsn] * record_batch.num_rows, type=pa.uint64())
+        deleted_array = pa.nulls(record_batch.num_rows, type=pa.uint64())
         with_eid = pa.RecordBatch.from_arrays(
-            [eid_array, *record_batch.columns],
-            names=[EID_COLUMN, *record_batch.schema.names],
+            [eid_array, *record_batch.columns, created_array, deleted_array],
+            names=[
+                EID_COLUMN,
+                *record_batch.schema.names,
+                CREATED_LSN_COLUMN,
+                DELETED_LSN_COLUMN,
+            ],
         )
 
         chunk_index = len(self.manifest.chunks)
@@ -220,22 +255,58 @@ class EdgeStore:
         save_edge_manifest(self.root, self.manifest)
         return ref
 
-    def scan(self, *, columns: list[str] | None = None) -> Iterator[pa.RecordBatch]:
+    def scan(
+        self,
+        *,
+        columns: list[str] | None = None,
+        snapshot_lsn: int | None = None,
+    ) -> Iterator[pa.RecordBatch]:
         for chunk in self.manifest.chunks:
             reader = ColumnReader(self.root / chunk.path)
             for batch in reader.record_batches():
+                if snapshot_lsn is not None:
+                    batch = _filter_visible(batch, snapshot_lsn)
                 if columns is not None:
                     batch = batch.select(columns)
+                else:
+                    batch = _select_public(batch)
                 yield batch
 
-    def to_table(self, *, columns: list[str] | None = None) -> pa.Table:
-        batches = list(self.scan(columns=columns))
+    def to_table(
+        self,
+        *,
+        columns: list[str] | None = None,
+        snapshot_lsn: int | None = None,
+    ) -> pa.Table:
+        batches = list(self.scan(columns=columns, snapshot_lsn=snapshot_lsn))
         if batches:
             return pa.Table.from_batches(batches)
         schema = self.schema
         if columns is not None:
             schema = pa.schema([schema.field(name) for name in columns])
+        else:
+            schema = pa.schema([field for field in schema if field.name not in _MVCC_COLUMNS])
         return pa.Table.from_batches([], schema=schema)
+
+
+def _filter_visible(batch: pa.RecordBatch, snapshot_lsn: int) -> pa.RecordBatch:
+    names = batch.schema.names
+    if CREATED_LSN_COLUMN not in names:
+        return batch
+    created = batch.column(CREATED_LSN_COLUMN)
+    deleted = (
+        batch.column(DELETED_LSN_COLUMN)
+        if DELETED_LSN_COLUMN in names
+        else pa.nulls(batch.num_rows, type=pa.uint64())
+    )
+    created_ok = pc.less_equal(created, pa.scalar(snapshot_lsn, type=pa.uint64()))
+    deleted_null = pc.is_null(deleted)
+    deleted_after = pc.fill_null(
+        pc.greater(deleted, pa.scalar(snapshot_lsn, type=pa.uint64())),
+        False,
+    )
+    visible = pc.and_(created_ok, pc.or_(deleted_null, deleted_after))
+    return batch.filter(visible)
 
 
 def manifest_path(root: Path) -> Path:
@@ -308,6 +379,8 @@ def list_edge_stores(bundle: Bundle) -> list[str]:
 
 __all__ = [
     "DST_COLUMN",
+    "CREATED_LSN_COLUMN",
+    "DELETED_LSN_COLUMN",
     "EID_COLUMN",
     "EdgeChunkRef",
     "EdgeStore",

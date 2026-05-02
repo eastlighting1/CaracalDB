@@ -95,6 +95,20 @@ def create_snapshot(bundle: Bundle, name: str, *, lsn_high: int | None = None) -
     return SnapshotId(lsn_high=lsn, name=name)
 
 
+def peek_snapshot(bundle: Bundle, name: str) -> SnapshotId:
+    """Read-only resolution of a named snapshot.
+
+    Unlike :func:`open_snapshot`, this does not increment the refcount or
+    rewrite the registry. Use it from query-time resolution (``AS_OF
+    SNAPSHOT 'name'``) where the caller does not own the snapshot.
+    """
+    registry = load_registry(bundle)
+    entry = registry.entries.get(name)
+    if entry is None:
+        raise CaracalError(code="CDB-8013", message=f"snapshot not found: {name!r}")
+    return SnapshotId(lsn_high=entry.lsn_high, name=name)
+
+
 def open_snapshot(bundle: Bundle, name: str) -> SnapshotId:
     registry = load_registry(bundle)
     entry = registry.entries.get(name)
@@ -137,6 +151,7 @@ __all__ = [
     "list_snapshots",
     "load_registry",
     "open_snapshot",
+    "peek_snapshot",
     "release_snapshot",
     "save_registry",
 ]
