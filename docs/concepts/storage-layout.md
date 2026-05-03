@@ -12,7 +12,7 @@ CaracalDB stores data in `.crcl` bundles. A bundle can be a directory during dev
 ## Mental Model
 
 ```mermaid
-flowchart TD
+flowchart LR
     A["database.crcl"] --> B["MANIFEST"]
     A --> C["catalog.fb"]
     A --> D["nodes/"]
