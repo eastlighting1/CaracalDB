@@ -37,9 +37,9 @@ flowchart LR
     T --> A["Arrow / Python results"]
     T --> M["Analytics + ML handoff"]
 
-    classDef source fill:#f8fafc,stroke:#64748b,color:#0f172a,stroke-width:1px
-    classDef tuft fill:#e0f2fe,stroke:#0284c7,color:#0f172a,stroke-width:2px
-    classDef outcome fill:#ecfdf5,stroke:#059669,color:#064e3b,stroke-width:1px
+    classDef source fill:#64748b1a,stroke:#64748b,stroke-width:1px
+    classDef tuft fill:#0284c71a,stroke:#0284c7,stroke-width:2px
+    classDef outcome fill:#0596691a,stroke:#059669,stroke-width:1px
     class C,S source
     class T tuft
     class P,O,A,M outcome
