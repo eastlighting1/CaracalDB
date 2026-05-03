@@ -21,6 +21,7 @@ env/
 # Local CaracalDB data
 *.crcl/
 *.crcl
+!examples/data/*.crcl
 
 # Private docs by default; allow versioned public notes.
 docs/*
