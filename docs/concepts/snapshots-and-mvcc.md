@@ -35,8 +35,8 @@ flowchart LR
 |---|---|
 | WAL-ordered transaction commits | Executable |
 | Write-write conflict detection | Executable |
-| Named snapshot metadata | Available through storage internals |
-| Tuft `AS_OF SNAPSHOT` syntax | Parsed, not a stable execution surface |
+| Named snapshot metadata | Executable |
+| Tuft `AS_OF SNAPSHOT` syntax | Executable in the focused query path |
 
 ## Storage Shape
 
@@ -44,11 +44,36 @@ Named snapshots are recorded under the bundle's `snapshots/` area and mirrored i
 
 ## Query Shape
 
-```tuft
-MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
-RETURN g.symbol
+```python
+import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "snapshots.crcl"
+    with cdb.connect(path) as db:
+        db.define_class("Gene")
+        db.insert_nodes("Gene", [{"symbol": "TP53"}])
+        snap = db.create_snapshot("release-2026-04")
+
+        db.insert_nodes("Gene", [{"symbol": "BRCA1"}])
+
+        rows = db.sql("""
+        MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
+        RETURN g.symbol
+        """).rows()
+        print(snap.name, snap.lsn_high)
+        print(rows)
 ```
-This syntax is the reserved read contract; the table above names its current execution status.
+
+Expected output:
+
+```text
+release-2026-04 1
+[{'symbol': 'TP53'}]
+```
+
+The `AS_OF SNAPSHOT` query reads the pinned view, so the later `BRCA1` insert is not visible.
 
 !!! note "Common misconception"
     A snapshot is not a copy of the whole database. It is a named read boundary, so the engine can decide which versions are visible.

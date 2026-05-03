@@ -15,25 +15,37 @@ Subgraph export should preserve node tables, edge tables, and metadata without f
 
 ## Steps
 
-1. Build a `Subgraph`.
+Build a `Subgraph`, export it to Arrow IPC, and import it back for a count check.
 
 ```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import pyarrow as pa
+
+from caracaldb.exec.operators.export_arrow import (
+    export_subgraph_to_arrow,
+    import_subgraph_from_arrow,
+)
 from caracaldb.ml.subgraph import Subgraph
 
 sg = Subgraph()
+sg.add_nodes("http://example.org/Gene", pa.table({"nid": [0, 1], "symbol": ["TP53", "BRCA1"]}))
+sg.add_edges("http://example.org/INTERACTS_WITH", pa.table({"src": [0], "dst": [1]}))
+sg.meta["snapshot"] = "release-2026-04"
+
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "subgraph.arrow"
+    export_subgraph_to_arrow(sg, path)
+    loaded = import_subgraph_from_arrow(path)
+
+    print(loaded.num_nodes(), loaded.num_edges(), loaded.meta["snapshot"])
 ```
-2. Add node and edge Arrow tables.
 
-```python
-sg.add_nodes("http://example.org/Gene", node_table)
-sg.add_edges("http://example.org/INTERACTS_WITH", edge_table)
-```
-3. Export to Arrow IPC.
+Expected output:
 
-```python
-from caracaldb.exec.operators.export_arrow import export_subgraph_to_arrow
-
-export_subgraph_to_arrow(sg, "subgraph.arrow")
+```text
+2 1 release-2026-04
 ```
 ## Verification
 

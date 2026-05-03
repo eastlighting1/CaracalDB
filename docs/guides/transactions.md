@@ -18,23 +18,36 @@ CaracalDB uses snapshot-tagged transactions and write-write conflict detection. 
 
 ## Steps
 
-1. Begin a transaction.
+Begin two transactions from the same snapshot, record the same write key, and confirm the second commit detects the conflict.
 
 ```python
-tx = manager.begin()
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from caracaldb.storage.wal import Wal
+from caracaldb.tx import TransactionManager, TxConflictError
+
+with TemporaryDirectory() as tmp:
+    with Wal(Path(tmp) / "wal") as wal:
+        manager = TransactionManager(wal)
+        first = manager.begin()
+        second = manager.begin()
+
+        first.record_write("nodes/Gene", 42)
+        second.record_write("nodes/Gene", 42)
+
+        print(manager.commit(first))
+        try:
+            manager.commit(second)
+        except TxConflictError as exc:
+            print(exc.code)
 ```
-2. Record the keys you write.
 
-```python
-tx.record_write("nodes/Gene", 42)
-```
-3. Commit or retry on conflict.
+Expected output:
 
-```python
-try:
-    manager.commit(tx)
-except TxConflictError:
-    tx = manager.begin()
+```text
+3
+CDB-8002
 ```
 ## Verification
 

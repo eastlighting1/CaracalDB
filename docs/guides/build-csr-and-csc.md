@@ -15,26 +15,36 @@ Row-oriented edge tables are easy to ingest, but neighbor-oriented workloads nee
 
 ## Steps
 
-1. Prepare an edge table with `src`, `dst`, and optionally `eid`.
+Prepare a tiny edge table, build both adjacency files, then read the results back.
 
 ```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 import pyarrow as pa
 
-edges = pa.table({"src": [0, 0, 1], "dst": [1, 2, 2], "eid": [10, 11, 12]})
-```
-2. Build CSR.
-
-```python
-from caracaldb.graph.csr_builder import build_csr
-
-result = build_csr(edges, num_vertices=3, out_path="graph/forward.csr")
-```
-3. Build CSC for reverse adjacency.
-
-```python
 from caracaldb.graph.csc_builder import build_csc
+from caracaldb.graph.csr_builder import build_csr
+from caracaldb.graph.csr_format import read_csr
 
-reverse = build_csc(edges, num_vertices=3, out_path="graph/reverse.csc")
+edges = pa.table({"src": [0, 0, 1], "dst": [1, 2, 2], "eid": [10, 11, 12]})
+
+with TemporaryDirectory() as tmp:
+    out = Path(tmp)
+    csr = build_csr(edges, num_vertices=3, out_path=out / "forward.csr")
+    csc = build_csc(edges, num_vertices=3, out_path=out / "reverse.csc")
+
+    forward = read_csr(csr.path, mmap=False)
+    reverse = read_csr(csc.path, mmap=False)
+    print(csr.num_edges, forward.offsets.tolist(), forward.neighbors.tolist())
+    print(csc.num_edges, reverse.offsets.tolist(), reverse.neighbors.tolist())
+```
+
+Expected output:
+
+```text
+3 [0, 2, 3, 3] [1, 2, 2]
+3 [0, 0, 1, 3] [0, 0, 1]
 ```
 ## Verification
 

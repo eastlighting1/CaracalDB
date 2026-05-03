@@ -17,30 +17,64 @@ The v0.1.x executor intentionally supports a narrow query shape: one class-label
 
 1. Match a class.
 
-```tuft
-MATCH (g:Gene)
-RETURN g.symbol
+```python
+import caracaldb as cdb
+from pathlib import Path
+
+path = Path("examples/data/example_simple.crcl")
+with cdb.connect(path, mode="ro") as db:
+    rows = db.sql("MATCH (p:Person) RETURN p.name").rows()
+    print(rows)
 ```
+
+Expected output:
+
+```text
+[{'name': 'Alice'}, {'name': 'Bob'}, {'name': 'Charlie'}, {'name': 'Diana'}]
+```
+
 2. Filter by a property.
 
-```tuft
-MATCH (g:Gene)
-WHERE g.chromosome = '17'
-RETURN g.symbol
-```
-3. Return multiple fields.
+```python
+import caracaldb as cdb
+from pathlib import Path
 
-```tuft
-MATCH (g:Gene)
-WHERE g.chromosome = '17'
-RETURN g.symbol, g.chromosome
-LIMIT 5
+path = Path("examples/data/example_simple.crcl")
+with cdb.connect(path, mode="ro") as db:
+    rows = db.sql("""
+    MATCH (p:Person)
+    WHERE p.city = 'London'
+    RETURN p.name, p.age
+    """).rows()
+    print(rows)
 ```
-4. Execute from Python.
+
+Expected output:
+
+```text
+[{'name': 'Bob', 'age': 34}]
+```
+
+3. Return multiple fields and an Arrow table.
 
 ```python
-with cdb.connect("demo", format="bundle") as db:
-    table = db.cursor().sql("MATCH (g:Gene) RETURN g.symbol LIMIT 5").arrow()
+import caracaldb as cdb
+from pathlib import Path
+
+path = Path("examples/data/example_simple.crcl")
+with cdb.connect(path, mode="ro") as db:
+    table = db.cursor().sql("""
+    MATCH (p:Person)
+    RETURN p.name, p.city
+    LIMIT 2
+    """).arrow()
+    print(table.to_pylist())
+```
+
+Expected output:
+
+```text
+[{'name': 'Alice', 'city': 'New York'}, {'name': 'Bob', 'city': 'London'}]
 ```
 ## Verification
 

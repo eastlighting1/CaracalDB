@@ -15,27 +15,36 @@ Graph ML often needs feature vectors by node id. `OnlineFeatureView` preloads se
 
 ## Steps
 
-1. Create the view.
+Open the weighted example database, then look up one node and a small batch.
 
 ```python
+from pathlib import Path
+
+import caracaldb as cdb
+import numpy as np
+
 from caracaldb.feature import OnlineFeatureView
 
-view = OnlineFeatureView(
-    bundle,
-    class_iri="http://example.org/Gene",
-    local_name="Gene",
-    feature_columns=["score", "degree"],
-)
-```
-2. Look up one node.
+path = Path("examples/data/example_weighted.crcl")
+with cdb.connect(path, mode="ro") as db:
+    view = OnlineFeatureView(
+        db.bundle,
+        class_iri="http://example.org/GraphNode",
+        local_name="GraphNode",
+        feature_columns=["pagerank", "degree"],
+    )
 
-```python
-features = view.lookup(42)
+    one = {k: v.item() for k, v in view.lookup(0).items()}
+    many = view.lookup_many(np.array([0, 1], dtype=np.uint64)).to_pylist()
+    print(one)
+    print(many)
 ```
-3. Look up many nodes as an Arrow table.
 
-```python
-table = view.lookup_many(nids)
+Expected output:
+
+```text
+{'pagerank': 0.15, 'degree': 2}
+[{'nid': 0, 'pagerank': 0.15, 'degree': 2}, {'nid': 1, 'pagerank': 0.85, 'degree': 10}]
 ```
 ## Verification
 

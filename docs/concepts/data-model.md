@@ -37,7 +37,14 @@ flowchart TD
 from caracaldb.onto.catalog import Catalog
 
 catalog = Catalog.empty()
-catalog.register_class(iri="http://example.org/Gene", local_name="Gene")
+gene = catalog.register_class(iri="http://example.org/Gene", local_name="Gene")
+print(gene.local_name, gene.iri)
+```
+
+Expected output:
+
+```text
+Gene http://example.org/Gene
 ```
 The local name keeps Tuft readable. The IRI keeps the model stable when datasets, namespaces, or external ontologies grow.
 

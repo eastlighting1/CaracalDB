@@ -47,13 +47,18 @@ uv run pytest
 
 ```python
 import caracaldb as cdb
+from pathlib import Path
 
-with cdb.connect("demo") as db:
-    db.define_class("Gene")
-    db.insert_nodes("Gene", [{"symbol": "TP53", "chromosome": "17"}])
-
-    rows = db.sql("MATCH (g:Gene) RETURN g.symbol").rows()
+path = Path("examples/data/example_simple.crcl")
+with cdb.connect(path, mode="ro") as db:
+    rows = db.sql("MATCH (p:Person) RETURN p.name, p.city LIMIT 2").rows()
     print(rows)
+```
+
+Expected output:
+
+```text
+[{'name': 'Alice', 'city': 'New York'}, {'name': 'Bob', 'city': 'London'}]
 ```
 
 The current Python reference query path supports a single `MATCH (alias:Class)` node pattern with `WHERE`, `RETURN`, and `LIMIT`. Broader graph patterns, richer binding, and multi-hop query execution are tracked in the milestone docs.

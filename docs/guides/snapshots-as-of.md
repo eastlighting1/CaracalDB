@@ -37,16 +37,50 @@ boundary that does not move while writes continue.
 
    ```python
    import caracaldb as cdb
+   from pathlib import Path
+   from tempfile import TemporaryDirectory
 
-   with cdb.connect("graph.crcl") as db:
-       snap = db.create_snapshot("release-2026-04")
+   with TemporaryDirectory() as tmp:
+       path = Path(tmp) / "graph.crcl"
+       with cdb.connect(path) as db:
+           db.define_class("Gene")
+           db.insert_nodes("Gene", [{"symbol": "TP53"}])
+           snap = db.create_snapshot("release-2026-04")
+           print(snap.name, snap.lsn_high)
+   ```
+
+   Expected output:
+
+   ```text
+   release-2026-04 1
    ```
 
 2. Reference the snapshot in Tuft:
 
-   ```tuft
-   MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
-   RETURN g.symbol
+   ```python
+   import caracaldb as cdb
+   from pathlib import Path
+   from tempfile import TemporaryDirectory
+
+   with TemporaryDirectory() as tmp:
+       path = Path(tmp) / "graph.crcl"
+       with cdb.connect(path) as db:
+           db.define_class("Gene")
+           db.insert_nodes("Gene", [{"symbol": "TP53"}])
+           db.create_snapshot("release-2026-04")
+           db.insert_nodes("Gene", [{"symbol": "BRCA1"}])
+
+           rows = db.sql("""
+           MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
+           RETURN g.symbol
+           """).rows()
+           print(rows)
+   ```
+
+   Expected output:
+
+   ```text
+   [{'symbol': 'TP53'}]
    ```
 
    If the name is unknown the call raises `CaracalError` with code
@@ -55,15 +89,47 @@ boundary that does not move while writes continue.
 3. List the registered snapshots:
 
    ```python
-   for entry in db.list_snapshots():
-       print(entry.name, entry.lsn_high, entry.created_at, entry.refcount)
+   import caracaldb as cdb
+   from pathlib import Path
+   from tempfile import TemporaryDirectory
+
+   with TemporaryDirectory() as tmp:
+       path = Path(tmp) / "graph.crcl"
+       with cdb.connect(path) as db:
+           db.define_class("Gene")
+           db.insert_nodes("Gene", [{"symbol": "TP53"}])
+           db.create_snapshot("release-2026-04")
+           print([(entry.name, entry.lsn_high, entry.refcount) for entry in db.list_snapshots()])
+   ```
+
+   Expected output:
+
+   ```text
+   [('release-2026-04', 1, 1)]
    ```
 
 4. Release the snapshot when it is no longer needed. The final release
    removes the entry from the registry:
 
    ```python
-   db.release_snapshot("release-2026-04")
+   import caracaldb as cdb
+   from pathlib import Path
+   from tempfile import TemporaryDirectory
+
+   with TemporaryDirectory() as tmp:
+       path = Path(tmp) / "graph.crcl"
+       with cdb.connect(path) as db:
+           db.define_class("Gene")
+           db.insert_nodes("Gene", [{"symbol": "TP53"}])
+           db.create_snapshot("release-2026-04")
+           db.release_snapshot("release-2026-04")
+           print(db.list_snapshots())
+   ```
+
+   Expected output:
+
+   ```text
+   []
    ```
 
 ## Verification
@@ -75,16 +141,26 @@ step 4 (and any other matching releases), the entry disappears.
 Rows inserted after the snapshot should be absent from `AS_OF` reads:
 
 ```python
-with cdb.connect("graph.crcl") as db:
-    db.define_class("Gene")
-    db.insert_nodes("Gene", [{"symbol": "TP53"}])
-    db.create_snapshot("v1")
-    db.insert_nodes("Gene", [{"symbol": "BRCA1"}])
+import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-    rows = db.sql(
-        "MATCH (g:Gene) AS_OF SNAPSHOT 'v1' RETURN g.symbol"
-    ).rows()
-    assert rows == [{"symbol": "TP53"}]
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "graph.crcl"
+    with cdb.connect(path) as db:
+        db.define_class("Gene")
+        db.insert_nodes("Gene", [{"symbol": "TP53"}])
+        db.create_snapshot("v1")
+        db.insert_nodes("Gene", [{"symbol": "BRCA1"}])
+
+        rows = db.sql("MATCH (g:Gene) AS_OF SNAPSHOT 'v1' RETURN g.symbol").rows()
+        print(rows)
+```
+
+Expected output:
+
+```text
+[{'symbol': 'TP53'}]
 ```
 
 ## Common Pitfalls

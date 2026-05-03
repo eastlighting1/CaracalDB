@@ -15,36 +15,61 @@ Bulk loading should stream input in chunks, preserve Arrow-compatible columns, a
 
 ## Steps
 
-1. Create or open a bundle.
+Create a bundle, write two tiny Parquet inputs, load nodes and edges, then read the stores back.
 
 ```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from caracaldb.ingest.parquet_loader import ingest_edges_from_parquet, ingest_nodes_from_parquet
 from caracaldb.storage import create_bundle
 
-bundle = create_bundle("graph", exist_ok=True)
+with TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    bundle = create_bundle(root / "graph", exist_ok=True)
+    genes = root / "genes.parquet"
+    interacts = root / "interacts.parquet"
+
+    pq.write_table(pa.table({"symbol": ["TP53", "BRCA1"], "score": [0.91, 0.62]}), genes)
+    pq.write_table(
+        pa.table(
+            {
+                "src": pa.array([0], type=pa.uint64()),
+                "dst": pa.array([1], type=pa.uint64()),
+            }
+        ),
+        interacts,
+    )
+
+    store, report = ingest_nodes_from_parquet(
+        bundle,
+        parquet_path=genes,
+        class_iri="http://example.org/Gene",
+        local_name="Gene",
+    )
+    edge_store, edge_report = ingest_edges_from_parquet(
+        bundle,
+        parquet_path=interacts,
+        property_iri="http://example.org/INTERACTS_WITH",
+        local_name="INTERACTS_WITH",
+    )
+
+    print(report.rows_read, report.rows_written, report.rows_quarantined)
+    print(store.to_table().to_pylist())
+    print(edge_report.rows_read, edge_report.rows_written, edge_report.rows_quarantined)
+    print(edge_store.to_table().to_pylist())
 ```
-2. Load node rows.
 
-```python
-from caracaldb.ingest.parquet_loader import ingest_nodes_from_parquet
+Expected output:
 
-store, report = ingest_nodes_from_parquet(
-    bundle,
-    parquet_path="genes.parquet",
-    class_iri="http://example.org/Gene",
-    local_name="Gene",
-)
-```
-3. Load edge rows with `src` and `dst` columns that are already UInt64 node ids.
-
-```python
-from caracaldb.ingest.parquet_loader import ingest_edges_from_parquet
-
-edge_store, edge_report = ingest_edges_from_parquet(
-    bundle,
-    parquet_path="interacts.parquet",
-    property_iri="http://example.org/INTERACTS_WITH",
-    local_name="INTERACTS_WITH",
-)
+```text
+2 2 0
+[{'nid': 0, 'symbol': 'TP53', 'score': 0.91}, {'nid': 1, 'symbol': 'BRCA1', 'score': 0.62}]
+1 1 0
+[{'eid': 0, 'src': 0, 'dst': 1}]
 ```
 ## Verification
 

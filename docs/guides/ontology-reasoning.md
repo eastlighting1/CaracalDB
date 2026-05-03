@@ -22,14 +22,25 @@ Real datasets rarely agree on one flat label set. A biomedical graph might conta
 
 ```python
 import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-with cdb.connect("bio") as db:
-    db.define_class("Gene", iri="http://example.org/Gene")
-    db.define_class(
-        "ProteinCodingGene",
-        iri="http://example.org/ProteinCodingGene",
-        superclass_iris=("http://example.org/Gene",),
-    )
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "bio.crcl"
+    with cdb.connect(path) as db:
+        db.define_class("Gene", iri="http://example.org/Gene")
+        db.define_class(
+            "ProteinCodingGene",
+            iri="http://example.org/ProteinCodingGene",
+            superclass_iris=("http://example.org/Gene",),
+        )
+        print([cls.local_name for cls in db.catalog.classes])
+```
+
+Expected output:
+
+```text
+['Gene', 'ProteinCodingGene']
 ```
 
 2. Record superclass intent in catalog metadata when you are building or testing ontology data.
@@ -44,15 +55,46 @@ catalog.register_class(
     local_name="ProteinCodingGene",
     superclass_iris=("http://example.org/Gene",),
 )
+print([(cls.local_name, cls.superclass_iris) for cls in catalog.classes])
+```
+
+Expected output:
+
+```text
+[('Gene', ()), ('ProteinCodingGene', ('http://example.org/Gene',))]
 ```
 This lower-level catalog object is not automatically attached to an already-open database handle. Use the database API for runnable inserts and queries, and persist catalog metadata explicitly when writing internal tooling.
 
 3. Use hierarchy-aware Tuft syntax for class closure reads.
 
-```tuft
-MATCH (g:ProteinCodingGene)
-WHERE g.class SUBCLASSOF* <http://example.org/Gene>
-RETURN g.symbol
+```python
+import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "bio.crcl"
+    with cdb.connect(path) as db:
+        db.define_class("Gene", iri="http://example.org/Gene")
+        db.define_class(
+            "ProteinCodingGene",
+            iri="http://example.org/ProteinCodingGene",
+            superclass_iris=("http://example.org/Gene",),
+        )
+        db.insert_nodes("ProteinCodingGene", [{"symbol": "TP53"}])
+
+        rows = db.sql("""
+        MATCH (g:ProteinCodingGene)
+        WHERE g.class SUBCLASSOF* <http://example.org/Gene>
+        RETURN g.symbol
+        """).rows()
+        print(rows)
+```
+
+Expected output:
+
+```text
+[{'symbol': 'TP53'}]
 ```
 4. Materialize closure when the graph needs reusable hierarchy lookup. This syntax is reserved for the broader reasoning surface and is not part of the focused v0.1.x `db.sql()` path yet.
 

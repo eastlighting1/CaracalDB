@@ -43,9 +43,17 @@ flowchart TD
 
 ```python
 import caracaldb as cdb
+from pathlib import Path
 
-with cdb.connect("demo") as db:
-    print(db.bundle.path)
+path = Path("examples/data/example_simple.crcl")
+with cdb.connect(path, mode="ro") as db:
+    print(db.bundle.path.name)
+```
+
+Expected output:
+
+```text
+example_simple.crcl
 ```
 !!! note "Common misconception"
     The `.crcl` suffix does not always mean the same physical shape. Check whether a path is a directory bundle or a packed file before writing tooling that inspects it directly.

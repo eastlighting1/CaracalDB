@@ -15,22 +15,33 @@ Vector search should keep node ids stable while delegating nearest-neighbor work
 
 ## Steps
 
-1. Create an index config.
+Create an index, add two vectors keyed by node id, and query the nearest neighbor.
 
 ```python
+import numpy as np
+
 from caracaldb.graph.hnsw import HnswConfig, HnswIndex
 
-index = HnswIndex(HnswConfig(dim=64, metric="cosine", max_elements=10000))
-```
-2. Add vectors keyed by node id.
+index = HnswIndex(HnswConfig(dim=3, metric="l2", max_elements=10))
+index.add(
+    ids=[1, 2],
+    vectors=np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    ),
+)
 
-```python
-index.add(ids=[1, 2], vectors=vectors)
+labels, distances = index.search(np.array([1.0, 0.0, 0.0], dtype=np.float32), k=1, ef=8)
+print(labels.tolist(), distances.round(4).tolist())
 ```
-3. Query nearest neighbors.
 
-```python
-labels, distances = index.search(query_vector, k=10, ef=64)
+Expected output:
+
+```text
+[[1]] [[0.0]]
 ```
 ## Verification
 

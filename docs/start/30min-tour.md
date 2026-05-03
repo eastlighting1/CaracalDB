@@ -11,12 +11,21 @@ This tour gives you the shape of CaracalDB without pretending every planned surf
 
 ## 1. Open A Database
 
-New databases use the packed `.crcl` format by default. The engine works through an internal bundle while the handle is open, but first-use code does not need to manage that detail.
+The repository includes small `.crcl` files under `examples/data/`. Use those for read-only examples unless a guide is specifically demonstrating database creation or writes.
 
 ```python
 import caracaldb as cdb
+from pathlib import Path
 
-db = cdb.connect("tour")
+path = Path("examples/data/example_simple.crcl")
+with cdb.connect(path, mode="ro") as db:
+    print(type(db).__name__)
+```
+
+Expected output:
+
+```text
+Database
 ```
 
 ## 2. Define A Class
@@ -24,7 +33,21 @@ db = cdb.connect("tour")
 Classes are the names Tuft queries match. `define_class` creates the catalog entry; an explicit IRI is only needed when ontology identity matters.
 
 ```python
-db.define_class("Gene")
+import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "tour.crcl"
+    with cdb.connect(path) as db:
+        db.define_class("Gene")
+        print([cls.local_name for cls in db.catalog.classes])
+```
+
+Expected output:
+
+```text
+['Gene']
 ```
 
 ## 3. Insert Nodes
@@ -32,53 +55,84 @@ db.define_class("Gene")
 Rows are plain Python dictionaries. CaracalDB stores them as Arrow-compatible columns internally.
 
 ```python
-db.insert_nodes(
-    "Gene",
-    [
-        {"symbol": "TP53", "chromosome": "17"},
-        {"symbol": "BRCA1", "chromosome": "17"},
-        {"symbol": "EGFR", "chromosome": "7"},
-    ],
-)
+import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "tour.crcl"
+    with cdb.connect(path) as db:
+        db.define_class("Gene")
+        db.insert_nodes(
+            "Gene",
+            [
+                {"symbol": "TP53", "chromosome": "17"},
+                {"symbol": "BRCA1", "chromosome": "17"},
+                {"symbol": "EGFR", "chromosome": "7"},
+            ],
+        )
+        print(db.sql("MATCH (g:Gene) RETURN g.symbol").rows())
+```
+
+Expected output:
+
+```text
+[{'symbol': 'TP53'}, {'symbol': 'BRCA1'}, {'symbol': 'EGFR'}]
 ```
 
 ## 4. Run A Query
 
 The v0.2.x query path supports a focused single-node pattern with `WHERE`, `RETURN`, and `LIMIT`.
 
-```tuft
-MATCH (g:Gene)
-WHERE g.chromosome = '17'
-RETURN g.symbol
-LIMIT 5
-```
-
 ```python
-rows = db.sql("""
-MATCH (g:Gene)
-WHERE g.chromosome = '17'
-RETURN g.symbol
-LIMIT 5
-""").rows()
-print(rows)
+import caracaldb as cdb
+from pathlib import Path
+
+query = """
+MATCH (p:Person)
+WHERE p.city = 'London'
+RETURN p.name, p.age
+"""
+
+path = Path("examples/data/example_simple.crcl")
+with cdb.connect(path, mode="ro") as db:
+    rows = db.sql(query).rows()
+    print(rows)
 ```
 
-Close the handle when you are not using a `with` block.
+Expected output:
 
-```python
-db.close()
+```text
+[{'name': 'Bob', 'age': 34}]
 ```
+
+Close the handle when you are not using a `with` block. The examples above use `with`, so the handle is closed automatically.
 
 ## 5. Add Ontology Intent
 
 Ontology metadata makes class names durable and explainable. In v0.2.x, the executable public API can register the class and IRI:
 
 ```python
-db.define_class(
-    "ProteinCodingGene",
-    iri="http://example.org/ProteinCodingGene",
-    superclass_iris=("http://example.org/Gene",),
-)
+import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "tour.crcl"
+    with cdb.connect(path) as db:
+        db.define_class("Gene", iri="http://example.org/Gene")
+        db.define_class(
+            "ProteinCodingGene",
+            iri="http://example.org/ProteinCodingGene",
+            superclass_iris=("http://example.org/Gene",),
+        )
+        print([cls.local_name for cls in db.catalog.classes])
+```
+
+Expected output:
+
+```text
+['Gene', 'ProteinCodingGene']
 ```
 
 The focused `SUBCLASSOF*` class closure predicate is available in the v0.2.x query path. Broader reasoning features such as property closure and explicit `INFER CLOSURE` materialization are still experimental.
@@ -88,36 +142,41 @@ The focused `SUBCLASSOF*` class closure predicate is available in the v0.2.x que
 Not every graph arrives as one node table and one edge table. `import_resource` accepts common resource shapes and normalizes them to CaracalDB nodes, edges, and internal resource ids.
 
 ```python
-db.insert_triples(
-    [
-        {"subject": "project/P9", "predicate": "rdf:type", "object": "Project"},
-        {"subject": "project/P9", "predicate": "name", "object": "Risk Model"},
-    ]
-)
+import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-db.import_resource(
-    {
-        "id": "employee/E12345",
-        "labels": ["Employee"],
-        "properties": {"name": "Lukas Hoffman"},
-        "relationships": {"worksOn": "project/P9"},
-    }
-)
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "tour.crcl"
+    with cdb.connect(path) as db:
+        db.insert_triples(
+            [
+                {"subject": "project/P9", "predicate": "rdf:type", "object": "Project"},
+                {"subject": "project/P9", "predicate": "name", "object": "Risk Model"},
+            ]
+        )
+        db.import_resource(
+            {
+                "id": "employee/E12345",
+                "labels": ["Employee"],
+                "properties": {"name": "Lukas Hoffman"},
+                "relationships": {"worksOn": "project/P9"},
+            }
+        )
 
-ref = db.resource("employee/E12345")
-print(ref.display_iri)  # caracaldb://resource/employee/E12345
+        ref = db.resource("employee/E12345")
+        print(ref.display_iri)
+        print(db.export_resource_turtle("employee/E12345").splitlines()[0])
 ```
 
-Raw triples can land through the same model:
+Expected output:
 
-```python
-db.insert_triples(
-    [
-        {"subject": "system/customer-data-lake", "predicate": "rdf:type", "object": "System"},
-        {"subject": "system/customer-data-lake", "predicate": "name", "object": "Customer Data Lake"},
-    ]
-)
+```text
+caracaldb://resource/employee/E12345
+@prefix cdb: <caracaldb://resource/> .
 ```
+
+Raw triples can land through the same model; use the same `insert_triples` shape with different subject ids.
 
 ## 7. Think In Snapshots
 
@@ -125,27 +184,34 @@ Snapshots name a read view by LSN. Create the snapshot first, then reference
 that name from `AS_OF SNAPSHOT` reads.
 
 ```python
-snap = db.create_snapshot("release-2026-04")
-print(snap.name, snap.lsn)
+import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "tour.crcl"
+    with cdb.connect(path) as db:
+        db.define_class("Gene")
+        db.insert_nodes("Gene", [{"symbol": "TP53"}])
+
+        snap = db.create_snapshot("release-2026-04")
+        db.insert_nodes("Gene", [{"symbol": "BRCA1"}])
+
+        rows = db.sql("""
+        MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
+        RETURN g.symbol
+        """).rows()
+        print(snap.name, snap.lsn_high)
+        print(rows)
+
+        db.release_snapshot("release-2026-04")
 ```
 
-```tuft
-MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
-RETURN g.symbol
-```
+Expected output:
 
-```python
-rows = db.sql("""
-MATCH (g:Gene) AS_OF SNAPSHOT 'release-2026-04'
-RETURN g.symbol
-""").rows()
-print(rows)
-```
-
-Release the named snapshot when the read view is no longer needed.
-
-```python
-db.release_snapshot("release-2026-04")
+```text
+release-2026-04 1
+[{'symbol': 'TP53'}]
 ```
 
 ## 8. Hand Off To Analytics Or ML

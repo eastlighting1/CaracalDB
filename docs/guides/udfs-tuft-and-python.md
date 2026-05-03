@@ -18,25 +18,32 @@ CaracalDB distinguishes pure Tuft UDFs from Python UDFs. Pure Tuft UDFs stay ins
 
 ## Steps
 
-1. Define a Python UDF.
+Define a Python UDF, register it, and run it against a small Arrow array.
 
 ```python
 import pyarrow as pa
-from caracaldb.udf import udf
+import pyarrow.compute as pc
+
+from caracaldb.udf import UdfRegistry, udf
 
 @udf(returns=pa.int64(), arg_types=(pa.int64(),))
 def add_one(x):
-    return pa.compute.add(x, 1)
-```
-2. Register it in a `UdfRegistry`.
-
-```python
-from caracaldb.udf import UdfRegistry
+    return pc.add(x, 1)
 
 registry = UdfRegistry()
 registry.register(add_one)
+
+result = registry.call("add_one", pa.array([1, 2, 3], type=pa.int64()))
+print(result.to_pylist())
 ```
-3. Use pure Tuft UDFs for expression-level reuse when the body can stay in tuple IR.
+
+Expected output:
+
+```text
+[2, 3, 4]
+```
+
+Use pure Tuft UDFs for expression-level reuse when the body can stay in tuple IR.
 
 ## Verification
 

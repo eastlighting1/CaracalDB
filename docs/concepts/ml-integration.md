@@ -36,6 +36,17 @@ from caracaldb.ml.subgraph import Subgraph
 
 sg = Subgraph()
 sg.add_nodes("http://example.org/Gene", pa.table({"nid": [1], "symbol": ["TP53"]}))
+sg.add_edges("http://example.org/INTERACTS_WITH", pa.table({"src": [1], "dst": [2]}))
+
+print(sg.num_nodes(), sg.num_edges())
+print(sg.nodes["http://example.org/Gene"].to_pylist())
+```
+
+Expected output:
+
+```text
+1 1
+[{'nid': 1, 'symbol': 'TP53'}]
 ```
 ## Why This Shape
 

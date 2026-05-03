@@ -21,9 +21,21 @@ Graph queries can hide expensive scans, expansions, or sorts. CaracalDB separate
 1. Render a logical plan with `explain_logical`.
 
 ```python
+from caracaldb.plan.logical import LLimit, LNodeScan
 from caracaldb.observability import explain_logical, render_explain
 
+plan = LLimit(
+    LNodeScan(class_iri="http://example.org/Gene", local_name="Gene", alias="g"),
+    limit=5,
+)
 text = render_explain(explain_logical(plan))
+print(text.splitlines()[0])
+```
+
+Expected output:
+
+```text
+Limit (limit=5)
 ```
 2. Use CLI `explain` for a quick wiring check.
 

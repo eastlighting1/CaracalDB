@@ -48,14 +48,25 @@ For executable v0.1.x code, define classes through the database handle:
 
 ```python
 import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-with cdb.connect("ontology-demo") as db:
-    db.define_class("Gene", iri="http://example.org/Gene")
-    db.define_class(
-        "ProteinCodingGene",
-        iri="http://example.org/ProteinCodingGene",
-        superclass_iris=("http://example.org/Gene",),
-    )
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "ontology-demo.crcl"
+    with cdb.connect(path) as db:
+        db.define_class("Gene", iri="http://example.org/Gene")
+        db.define_class(
+            "ProteinCodingGene",
+            iri="http://example.org/ProteinCodingGene",
+            superclass_iris=("http://example.org/Gene",),
+        )
+        print([cls.local_name for cls in db.catalog.classes])
+```
+
+Expected output:
+
+```text
+['Gene', 'ProteinCodingGene']
 ```
 
 The lower-level catalog stores the hierarchy metadata that closure-aware reads consume:
@@ -70,17 +81,48 @@ catalog.register_class(
     local_name="ProteinCodingGene",
     superclass_iris=("http://example.org/Gene",),
 )
+print([(cls.local_name, cls.superclass_iris) for cls in catalog.classes])
+```
+
+Expected output:
+
+```text
+[('Gene', ()), ('ProteinCodingGene', ('http://example.org/Gene',))]
 ```
 The superclass link is data, not prose. That lets documentation, validation, query binding, and closure indexes read from the same model.
 
 ## Query Shape
 
-Tuft supports the focused class hierarchy predicate in the current MVP query path:
+Tuft supports the focused class hierarchy predicate in the current MVP query path. This executable example inserts a subclass node and reads it through the superclass closure predicate:
 
-```tuft
-MATCH (g:ProteinCodingGene)
-WHERE g.class SUBCLASSOF* <http://example.org/Gene>
-RETURN g.symbol
+```python
+import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "ontology-query.crcl"
+    with cdb.connect(path) as db:
+        db.define_class("Gene", iri="http://example.org/Gene")
+        db.define_class(
+            "ProteinCodingGene",
+            iri="http://example.org/ProteinCodingGene",
+            superclass_iris=("http://example.org/Gene",),
+        )
+        db.insert_nodes("ProteinCodingGene", [{"symbol": "TP53"}])
+
+        rows = db.sql("""
+        MATCH (g:ProteinCodingGene)
+        WHERE g.class SUBCLASSOF* <http://example.org/Gene>
+        RETURN g.symbol
+        """).rows()
+        print(rows)
+```
+
+Expected output:
+
+```text
+[{'symbol': 'TP53'}]
 ```
 The `*` means transitive closure: direct subclasses and indirect subclasses can both match the requested superclass.
 

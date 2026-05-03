@@ -11,19 +11,24 @@ This page is the shortest path from an empty environment to a CaracalDB query re
 
 ## Goal
 
-Open or create a packed `.crcl` database, insert one node, run the current MVP Tuft query shape, and return Python rows.
+Open an existing example `.crcl` database, run the current MVP Tuft query shape, and return Python rows.
 
 ## Minimal Query
 
 ```python
 import caracaldb as cdb
+from pathlib import Path
 
-with cdb.connect("demo") as db:
-    db.define_class("Gene")
-    db.insert_nodes("Gene", [{"symbol": "TP53", "chromosome": "17"}])
-
-    rows = db.sql("MATCH (g:Gene) RETURN g.symbol").rows()
+path = Path("examples/data/example_simple.crcl")
+with cdb.connect(path, mode="ro") as db:
+    rows = db.sql("MATCH (p:Person) RETURN p.name, p.city LIMIT 2").rows()
     print(rows)
+```
+
+Expected output:
+
+```text
+[{'name': 'Alice', 'city': 'New York'}, {'name': 'Bob', 'city': 'London'}]
 ```
 The query surface in v0.2.x supports a focused single-node pattern with `WHERE`, `RETURN`, and `LIMIT`. Broader Tuft examples live in the language reference as the public API catches up with the planner.
 
@@ -33,18 +38,38 @@ GNN-style data can describe graph meaning with columns instead of IRIs. `type` b
 
 ```python
 import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-with cdb.connect("leaderboard") as db:
-    db.insert_node_table(
-        [
-            {"node_id": 0, "type": "User", "name": "Grandmaster_Ayasha_R", "rank_points": 49908.0},
-            {"node_id": 4691, "type": "Competition", "name": "Spring Open", "rank_points": None},
-        ]
-    )
-    db.insert_edge_table([{"src": 0, "dst": 4691, "type": "HOSTED"}])
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "leaderboard.crcl"
+    with cdb.connect(path) as db:
+        db.insert_node_table(
+            [
+                {
+                    "node_id": 0,
+                    "type": "User",
+                    "name": "Grandmaster_Ayasha_R",
+                    "rank_points": 49908.0,
+                },
+                {
+                    "node_id": 4691,
+                    "type": "Competition",
+                    "name": "Spring Open",
+                    "rank_points": None,
+                },
+            ]
+        )
+        db.insert_edge_table([{"src": 0, "dst": 4691, "type": "HOSTED"}])
 
-    rows = db.sql("MATCH (u:User) RETURN u.node_id, u.name").rows()
-    print(rows)
+        rows = db.sql("MATCH (u:User) RETURN u.node_id, u.name").rows()
+        print(rows)
+```
+
+Expected output:
+
+```text
+[{'node_id': 0, 'name': 'Grandmaster_Ayasha_R'}]
 ```
 
 IRIs are optional in this path. CaracalDB keeps internal identifiers for catalog and storage compatibility, while user code can keep working with dataset ids such as `node_id`.
@@ -55,26 +80,37 @@ CaracalDB can also normalize resource-shaped data. A Neo4j-style JSON object, an
 
 ```python
 import caracaldb as cdb
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-with cdb.connect("company") as db:
-    db.insert_triples(
-        [
-            {"subject": "project/P9", "predicate": "rdf:type", "object": "Project"},
-            {"subject": "project/P9", "predicate": "name", "object": "Risk Model"},
-        ]
-    )
-    db.import_resource(
-        {
-            "id": "employee/E12345",
-            "labels": ["Employee"],
-            "properties": {"name": "Lukas Hoffman", "riskScore": 0.72},
-            "relationships": {"worksOn": "project/P9"},
-        }
-    )
+with TemporaryDirectory() as tmp:
+    path = Path(tmp) / "company.crcl"
+    with cdb.connect(path) as db:
+        db.insert_triples(
+            [
+                {"subject": "project/P9", "predicate": "rdf:type", "object": "Project"},
+                {"subject": "project/P9", "predicate": "name", "object": "Risk Model"},
+            ]
+        )
+        db.import_resource(
+            {
+                "id": "employee/E12345",
+                "labels": ["Employee"],
+                "properties": {"name": "Lukas Hoffman", "riskScore": 0.72},
+                "relationships": {"worksOn": "project/P9"},
+            }
+        )
 
-    ref = db.resource("employee/E12345")
-    print(ref.display_iri)
-    print(db.export_resource_turtle("employee/E12345"))
+        ref = db.resource("employee/E12345")
+        print(ref.display_iri)
+        print(db.export_resource_turtle("employee/E12345").splitlines()[0])
+```
+
+Expected output:
+
+```text
+caracaldb://resource/employee/E12345
+@prefix cdb: <caracaldb://resource/> .
 ```
 
 Explicit ontology IRIs remain available when identity matters, but they are metadata rather than a requirement for loading property-graph or GNN-shaped data.
