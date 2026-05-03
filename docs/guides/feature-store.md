@@ -25,7 +25,7 @@ import numpy as np
 
 from caracaldb.feature import OnlineFeatureView
 
-path = Path("examples/data/example_weighted.crcl")
+path = Path(cdb.__file__).resolve().parents[1] / "examples/data/example_weighted.crcl"
 with cdb.connect(path, mode="ro") as db:
     view = OnlineFeatureView(
         db.bundle,
