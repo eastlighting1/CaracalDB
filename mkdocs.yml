@@ -51,6 +51,7 @@ plugins:
           options:
             show_source: true
             show_root_heading: true
+            docstring_style: numpy
 
 markdown_extensions:
   - admonition
@@ -111,18 +112,15 @@ nav:
       - Specification: tuft/spec.md
       - Built-ins: tuft/builtins.md
       - Grammar: tuft/grammar.lark
-  - API:
+  - API Reference:
       - Overview: api/README.md
-      - caracaldb: api/caracaldb.md
-      - Storage: api/storage.md
+      - Input / Output: api/io.md
+      - Storage & Transactions: api/storage.md
+      - Query Engine: api/query-engine.md
       - Graph: api/graph.md
-      - Plan: api/plan.md
-      - Exec: api/exec.md
-      - ML: api/ml.md
-      - Feature: api/feature.md
-      - Observability: api/observability.md
-      - Transactions: api/tx.md
-      - UDF: api/udf.md
+      - Ontology: api/onto.md
+      - Machine Learning: api/ml.md
+      - Extensions: api/extensions.md
   - Errors:
       - Index: errors/index.md
       - Tuft:

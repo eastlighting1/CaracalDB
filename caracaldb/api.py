@@ -78,9 +78,11 @@ class ResourceRef:
 
     Examples
     --------
-    >>> ref = ResourceRef("employee/E12345", 42, "caracaldb://resource/employee/E12345")
-    >>> ref.internal_id
-    42
+    ```python
+    ref = ResourceRef("employee/E12345", 42, "caracaldb://resource/employee/E12345")
+    ref.internal_id
+    # 42
+    ```
     """
 
     external_id: Any
@@ -96,9 +98,11 @@ class Result:
 
     Examples
     --------
-    >>> result = Result([])
-    >>> result.arrow().num_rows
-    0
+    ```python
+    result = Result([])
+    result.arrow().num_rows
+    # 0
+    ```
     """
 
     _batches: list[pa.RecordBatch]
@@ -120,8 +124,10 @@ class Connection:
 
     Examples
     --------
-    >>> isinstance(Connection, type)
-    True
+    ```python
+    isinstance(Connection, type)
+    # True
+    ```
     """
 
     def __init__(self, db: Database) -> None:
@@ -177,10 +183,23 @@ class Database:
         with cdb.connect("data") as db:
             db.cursor().sql("MATCH ...")
 
+    See Also
+    --------
+    connect : Function used to instantiate a Database.
+    Connection : The context for executing queries.
+
+    Notes
+    -----
+    The Database object owns the underlying storage bundle and catalog.
+    It is recommended to use it as a context manager to ensure proper cleanup,
+    especially when working with packed `.crcl` files.
+
     Examples
     --------
-    >>> isinstance(Database, type)
-    True
+    ```python
+    isinstance(Database, type)
+    # True
+    ```
     """
 
     def __init__(
@@ -683,13 +702,30 @@ def connect(path: str | Path, *, mode: str = "rw", format: str = "auto") -> Data
         * ``"bundle"`` — force directory bundle format (the engine's
           internal working format).
 
+    Returns
+    -------
+    Database
+        An open database handle.
+
+    See Also
+    --------
+    Database : The core database object.
+    Connection : The context for executing queries.
+
+    Notes
+    -----
+    ``connect`` is the primary entry point for CaracalDB. It determines whether
+    to unpack a single file or open a directory based on the ``format`` parameter.
+
     Examples
     --------
-    >>> import tempfile
-    >>> root = tempfile.TemporaryDirectory()
-    >>> db = connect(Path(root.name) / "demo", format="bundle")
-    >>> db.close()
-    >>> root.cleanup()
+    ```python
+    import tempfile
+    root = tempfile.TemporaryDirectory()
+    db = connect(Path(root.name) / "demo", format="bundle")
+    db.close()
+    root.cleanup()
+    ```
     """
     if mode not in ("rw", "ro"):
         raise CaracalError(code="CDB-6022", message=f"unsupported mode: {mode}")

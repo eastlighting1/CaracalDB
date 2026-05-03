@@ -22,4 +22,4 @@ Rewrite the query using supported pattern, filter, projection, aggregation, and 
 ## Cross-References
 
 - [Pattern Queries](../../guides/pattern-queries.md)
-- [Execution API](../../api/exec.md)
+- [Query Engine API](../../api/query-engine.md)

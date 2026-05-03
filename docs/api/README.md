@@ -1,26 +1,29 @@
 ---
-applies_to: v0.1.x
-status: experimental
-last_updated: 2026-04-28
+applies_to: v0.2.x
+status: stable
+last_updated: 2026-05-04
 engine_status: python-reference; rust-engine-planned
 ---
 
-# API
+# API Reference
 
-The API section documents public Python entry points first, then lower-level engine modules for contributors and advanced users.
+The API section is organized by functional area. Each page covers a group of closely related
+modules so that application code, engine contributors, and ML users each have a natural entry point.
 
-## Primary Entry Points
+## Pages
 
-- [caracaldb](caracaldb.md): `connect`, `Database`, `Connection`, and `Result`.
+| Page | Covers | Audience |
+|---|---|---|
+| [Input / Output](io.md) | `connect`, `Database`, `Connection`, `Result`, bulk ingest | All users |
+| [Storage & Transactions](storage.md) | Bundles, manifests, column segments, OCC transactions | Tooling, contributors |
+| [Query Engine](query-engine.md) | Logical plan nodes, physical operators, pipeline execution | Engine contributors |
+| [Graph](graph.md) | CSR/CSC adjacency index build and read | Analytics, GNN users |
+| [Ontology](onto.md) | Catalog, class/property registry, closure index | Schema and ontology work |
+| [Machine Learning](ml.md) | Neighbor sampling, subgraph container, online feature serving | ML practitioners |
+| [Extensions](extensions.md) | Observability (explain/profile/trace), UDFs, Viewer | Advanced users |
 
-## Module Pages
+## Stability notes
 
-- [Storage](storage.md): bundles, segments, packing, and low-level storage primitives.
-- [Graph](graph.md): CSR, CSC, readers, and graph index helpers.
-- [Plan](plan.md): logical query tree nodes.
-- [Exec](exec.md): pull-based Arrow physical operators.
-- [ML](ml.md): subgraphs and neighbor loading.
-- [Feature](feature.md): online feature lookup.
-- [Observability](observability.md): explain, profile, and tracing helpers.
-- [Transactions](tx.md): transaction manager and conflicts.
-- [UDF](udf.md): Python and Tuft UDF helpers.
+CaracalDB keeps the Python import path stable while the engine implementation matures.
+Pages marked `experimental` have APIs that may change between minor versions.
+Pages marked `stable` follow semver guarantees from v0.2.x onwards.
