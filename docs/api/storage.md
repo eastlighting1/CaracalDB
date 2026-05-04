@@ -13,7 +13,7 @@ detection over the MVCC storage layer.
 
 !!! note "Application code does not need most of this"
     If you are connecting to a database and running queries, use
-    [`caracaldb.connect`](io.md) instead. Use these APIs for importers, CLI tooling,
+    `caracaldb.connect` instead. Use these APIs for importers, CLI tooling,
     custom exporters, engine contributors, and explicit transaction management.
 
 ---

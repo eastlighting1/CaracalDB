@@ -75,5 +75,5 @@ for batch in reader.neighbors([0, 1]):
 
 - [Build CSR and CSC Guide](../guides/build-csr-and-csc.md) — step-by-step walkthrough
 - [CSR/CSC Format](../format/csr-csc.md) — wire format specification
-- [Query Engine](query-engine.md) — `ExpandOperator` and `NeighborSampleOperator` consume these indexes
+- [Pattern Queries](../guides/pattern-queries.md) — the query surface that consumes graph-oriented execution pieces
 - [ML](ml.md) — neighbor sampling for GNN mini-batching

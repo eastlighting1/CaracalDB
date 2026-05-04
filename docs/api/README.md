@@ -14,13 +14,9 @@ modules so that application code, engine contributors, and ML users each have a 
 
 | Page | Covers | Audience |
 |---|---|---|
-| [Input / Output](io.md) | `connect`, `Database`, `Connection`, `Result`, bulk ingest | All users |
-| [Storage & Transactions](storage.md) | Bundles, manifests, column segments, OCC transactions | Tooling, contributors |
-| [Query Engine](query-engine.md) | Logical plan nodes, physical operators, pipeline execution | Engine contributors |
-| [Graph](graph.md) | CSR/CSC adjacency index build and read | Analytics, GNN users |
-| [Ontology](onto.md) | Catalog, class/property registry, closure index | Schema and ontology work |
+| [Storage & Transactions](storage.md) | Bundles, manifests, column segments, public connection path, OCC transactions | Tooling, contributors |
+| [Graph](graph.md) | CSR/CSC adjacency index build and read; traversal-facing graph primitives | Analytics, GNN users |
 | [Machine Learning](ml.md) | Neighbor sampling, subgraph container, online feature serving | ML practitioners |
-| [Extensions](extensions.md) | Observability (explain/profile/trace), UDFs, Viewer | Advanced users |
 
 ## Stability notes
 

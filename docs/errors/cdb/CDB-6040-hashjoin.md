@@ -22,4 +22,4 @@ Check the plan with `EXPLAIN`, filter the build side earlier, or rewrite the que
 ## Cross-References
 
 - [Observability](../../guides/observability-explain-profile.md)
-- [Query Engine API](../../api/query-engine.md)
+- [API Reference](../../api/README.md)
