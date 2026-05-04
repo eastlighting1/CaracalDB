@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
 import caracaldb as cdb
 
 FENCE_RE = re.compile(r"```python\n(.*?)\n```", re.DOTALL)
@@ -22,7 +23,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="caracal_docs_") as tmp:
         repo_root = Path(cdb.__file__).resolve().parents[1].as_posix()
         for index, block in enumerate(blocks, start=1):
-            # 사용자가 복붙하기 좋게 문서에는 상대 경로로 두되, 테스트 코드 실행 시에는 절대 경로로 치환
+            # 문서에는 상대 경로로 두되, 테스트 코드 실행 시에는 절대 경로로 치환
             block = block.replace('"examples/data/', f'"{repo_root}/examples/data/')
             script = Path(tmp) / f"quickstart_{index}.py"
             script.write_text(block, encoding="utf-8")
