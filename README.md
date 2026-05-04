@@ -47,32 +47,22 @@ uv run pytest
 
 ```python
 import caracaldb as cdb
-from pathlib import Path
-from tempfile import TemporaryDirectory
 
-path = Path(cdb.__file__).resolve().parents[1] / "examples/data/example_simple.crcl"
-tmp = None
-if not path.exists():
-    tmp = TemporaryDirectory()
-    path = Path(tmp.name) / "example_simple.crcl"
-    with cdb.connect(path) as db:
-        db.define_class("Person")
-        db.insert_nodes(
-            "Person",
-            [
-                {"name": "Alice", "age": 28, "city": "New York"},
-                {"name": "Bob", "age": 34, "city": "London"},
-                {"name": "Charlie", "age": 25, "city": "Paris"},
-                {"name": "Diana", "age": 42, "city": "Tokyo"},
-            ],
-        )
+with cdb.connect("examples/data/example_simple.crcl") as db:
+    db.define_class("Person")
+    db.insert_nodes(
+        "Person",
+        [
+            {"name": "Alice", "age": 28, "city": "New York"},
+            {"name": "Bob", "age": 34, "city": "London"},
+            {"name": "Charlie", "age": 25, "city": "Paris"},
+            {"name": "Diana", "age": 42, "city": "Tokyo"},
+        ],
+    )
 
-with cdb.connect(path, mode="ro") as db:
+with cdb.connect("examples/data/example_simple.crcl", mode="ro") as db:
     rows = db.sql("MATCH (p:Person) RETURN p.name, p.city LIMIT 2").rows()
     print(rows)
-
-if tmp is not None:
-    tmp.cleanup()
 ```
 
 Expected output:

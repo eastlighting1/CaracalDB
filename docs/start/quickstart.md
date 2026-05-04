@@ -19,8 +19,7 @@ Open an existing example `.crcl` database, run the current MVP Tuft query shape,
 import caracaldb as cdb
 from pathlib import Path
 
-path = Path(cdb.__file__).resolve().parents[1] / "examples/data/example_simple.crcl"
-with cdb.connect(path, mode="ro") as db:
+with cdb.connect("examples/data/example_simple.crcl", mode="ro") as db:
     rows = db.sql("MATCH (p:Person) RETURN p.name, p.city LIMIT 2").rows()
     print(rows)
 ```

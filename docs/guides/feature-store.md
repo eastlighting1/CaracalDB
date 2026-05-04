@@ -18,15 +18,12 @@ Graph ML often needs feature vectors by node id. `OnlineFeatureView` preloads se
 Open the weighted example database, then look up one node and a small batch.
 
 ```python
-from pathlib import Path
-
 import caracaldb as cdb
 import numpy as np
 
 from caracaldb.feature import OnlineFeatureView
 
-path = Path(cdb.__file__).resolve().parents[1] / "examples/data/example_weighted.crcl"
-with cdb.connect(path, mode="ro") as db:
+with cdb.connect("examples/data/example_weighted.crcl", mode="ro") as db:
     view = OnlineFeatureView(
         db.bundle,
         class_iri="http://example.org/GraphNode",
