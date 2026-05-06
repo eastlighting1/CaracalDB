@@ -233,6 +233,56 @@ def test_insert_edge_table_rejects_unknown_external_node_id(tmp_path: Path) -> N
     assert "unknown node_id" in exc.value.message
 
 
+def test_insert_node_table_accepts_arrow_table(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "typed-nodes-arrow") as db:
+        db.insert_node_table(
+            pa.table(
+                {
+                    "node_id": pa.array([0, 1, 4691]),
+                    "type": pa.array(["User", "User", "Competition"]),
+                    "name": pa.array(
+                        ["Grandmaster_Ayasha_R", "Grandmaster_Lucas_W", "Spring Open"]
+                    ),
+                }
+            )
+        )
+
+        table = db.node_table("User", columns=["node_id", "name"])
+
+    assert table.to_pylist() == [
+        {"node_id": 0, "name": "Grandmaster_Ayasha_R"},
+        {"node_id": 1, "name": "Grandmaster_Lucas_W"},
+    ]
+
+
+def test_insert_edge_table_accepts_arrow_table_and_exposes_edge_table(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "typed-edges-arrow") as db:
+        db.insert_node_table_arrow(
+            pa.table(
+                {
+                    "node_id": pa.array([0, 4691]),
+                    "type": pa.array(["User", "Competition"]),
+                    "name": pa.array(["Grandmaster_Ayasha_R", "Spring Open"]),
+                }
+            )
+        )
+
+        db.insert_edge_table(
+            pa.table(
+                {
+                    "src": pa.array([0]),
+                    "dst": pa.array([4691]),
+                    "type": pa.array(["HOSTED"]),
+                    "weight": pa.array([1.0]),
+                }
+            )
+        )
+
+        table = db.edge_table("HOSTED", columns=["src", "dst", "type", "weight"])
+
+    assert table.to_pylist() == [{"src": 0, "dst": 1, "type": "HOSTED", "weight": 1.0}]
+
+
 def test_import_resource_accepts_neo4j_json_and_creates_placeholder_targets(
     tmp_path: Path,
 ) -> None:

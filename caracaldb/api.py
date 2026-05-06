@@ -262,10 +262,14 @@ class Database:
     def insert_nodes(
         self,
         class_name: str,
-        rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+        rows: Mapping[str, Any] | Iterable[Mapping[str, Any]] | pa.Table,
     ) -> Any:
-        payload = [dict(rows)] if isinstance(rows, Mapping) else [dict(row) for row in rows]
-        if not payload:
+        if isinstance(rows, pa.Table):
+            table = rows
+        else:
+            payload = [dict(rows)] if isinstance(rows, Mapping) else [dict(row) for row in rows]
+            table = pa.Table.from_pylist(payload) if payload else pa.table({})
+        if table.num_rows == 0:
             raise CaracalError(code="CDB-7011", message="cannot insert an empty node batch")
 
         cls = self._find_class(class_name)
@@ -275,15 +279,18 @@ class Database:
             local_name=cls.local_name or _local(cls.iri),
             create=True,
         )
-        return store.append(pa.Table.from_pylist(payload), created_lsn=self._next_lsn())
+        return store.append(table, created_lsn=self._next_lsn())
 
     def insert_node_table(
         self,
-        rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+        rows: Mapping[str, Any] | Iterable[Mapping[str, Any]] | pa.Table,
         *,
         key_col: str = "node_id",
         type_col: str = "type",
     ) -> dict[str, Any]:
+        if isinstance(rows, pa.Table):
+            return self.insert_node_table_arrow(rows, key_col=key_col, type_col=type_col)
+
         payload = [dict(rows)] if isinstance(rows, Mapping) else [dict(row) for row in rows]
         if not payload:
             raise CaracalError(code="CDB-7011", message="cannot insert an empty node table")
@@ -317,15 +324,65 @@ class Database:
             refs[class_name] = self.insert_nodes(class_name, group)
         return refs
 
+    def insert_node_table_arrow(
+        self,
+        table: pa.Table,
+        *,
+        key_col: str = "node_id",
+        type_col: str = "type",
+    ) -> dict[str, Any]:
+        if table.num_rows == 0:
+            raise CaracalError(code="CDB-7011", message="cannot insert an empty node table")
+        _require_table_columns(table, (key_col, type_col), "node table")
+        if _INTERNAL_GID_COLUMN in table.column_names:
+            raise CaracalError(
+                code="CDB-7011",
+                message=f"node table must not include reserved column {_INTERNAL_GID_COLUMN!r}",
+            )
+
+        existing_ids = _external_id_map(self, key_col=key_col)
+        key_array = table[key_col].combine_chunks()
+        unique_keys = key_array.unique().to_pylist()
+        next_gid = max(existing_ids.values(), default=-1) + 1
+        for external_id in unique_keys:
+            if external_id not in existing_ids:
+                existing_ids[external_id] = next_gid
+                next_gid += 1
+
+        lookup_keys = unique_keys
+        lookup_gids = pa.array([existing_ids[key] for key in lookup_keys], type=pa.uint64())
+        key_indices = pa.compute.index_in(key_array, value_set=pa.array(lookup_keys))
+        gid_array = pa.compute.take(lookup_gids, key_indices)
+        with_gid = table.append_column(_INTERNAL_GID_COLUMN, gid_array)
+
+        refs: dict[str, Any] = {}
+        type_array = table[type_col].combine_chunks()
+        for raw_type in type_array.unique().to_pylist():
+            class_name = _coerce_local_name(raw_type, "node type")
+            mask = pa.compute.equal(type_array, pa.scalar(raw_type, type=type_array.type))
+            group = with_gid.filter(mask)
+            self.define_class(class_name)
+            refs[class_name] = self.insert_nodes(class_name, group)
+        return refs
+
     def insert_edge_table(
         self,
-        rows: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+        rows: Mapping[str, Any] | Iterable[Mapping[str, Any]] | pa.Table,
         *,
         src_col: str = "src",
         dst_col: str = "dst",
         type_col: str = "type",
         node_key_col: str = "node_id",
     ) -> dict[str, Any]:
+        if isinstance(rows, pa.Table):
+            return self.insert_edge_table_arrow(
+                rows,
+                src_col=src_col,
+                dst_col=dst_col,
+                type_col=type_col,
+                node_key_col=node_key_col,
+            )
+
         payload = [dict(rows)] if isinstance(rows, Mapping) else [dict(row) for row in rows]
         if not payload:
             raise CaracalError(code="CDB-7021", message="cannot insert an empty edge table")
@@ -363,6 +420,53 @@ class Database:
                 create=True,
             )
             refs[relation] = store.append(_edge_table(group), created_lsn=self._next_lsn())
+        return refs
+
+    def insert_edge_table_arrow(
+        self,
+        table: pa.Table,
+        *,
+        src_col: str = "src",
+        dst_col: str = "dst",
+        type_col: str = "type",
+        node_key_col: str = "node_id",
+    ) -> dict[str, Any]:
+        if table.num_rows == 0:
+            raise CaracalError(code="CDB-7021", message="cannot insert an empty edge table")
+        _require_table_columns(table, (src_col, dst_col, type_col), "edge table")
+        if "eid" in table.column_names:
+            raise CaracalError(
+                code="CDB-7021",
+                message="edge table must not include an 'eid' column; it is assigned by the store",
+            )
+
+        id_map = _external_id_map(self, key_col=node_key_col)
+        src = _resolve_external_node_array(id_map, table[src_col].combine_chunks(), src_col)
+        dst = _resolve_external_node_array(id_map, table[dst_col].combine_chunks(), dst_col)
+
+        property_columns = [
+            name for name in table.column_names if name not in {src_col, dst_col, type_col}
+        ]
+        output_columns = [table[name] for name in property_columns]
+        output_names = [*property_columns]
+        output_columns.extend([src, dst, table[type_col]])
+        output_names.extend(["src", "dst", type_col])
+        resolved = pa.table(output_columns, names=output_names)
+
+        refs: dict[str, Any] = {}
+        type_array = table[type_col].combine_chunks()
+        for raw_type in type_array.unique().to_pylist():
+            relation = _coerce_local_name(raw_type, "edge type")
+            mask = pa.compute.equal(type_array, pa.scalar(raw_type, type=type_array.type))
+            group = resolved.filter(mask)
+            prop = self._define_property(relation)
+            store = open_edge_store(
+                self._bundle,
+                property_iri=prop.iri,
+                local_name=prop.local_name or _local(prop.iri),
+                create=True,
+            )
+            refs[relation] = store.append(group, created_lsn=self._next_lsn())
         return refs
 
     def insert_triples(
@@ -607,6 +711,28 @@ class Database:
             self._bundle, class_iri=cls.iri, local_name=cls.local_name or _local(cls.iri)
         )
 
+    def node_table(
+        self,
+        class_name: str,
+        *,
+        columns: list[str] | None = None,
+    ) -> pa.Table:
+        return self.open_node_store(class_name).to_table(columns=columns)
+
+    def edge_table(
+        self,
+        property_name: str,
+        *,
+        columns: list[str] | None = None,
+    ) -> pa.Table:
+        prop = self._find_property(property_name)
+        store = open_edge_store(
+            self._bundle,
+            property_iri=prop.iri,
+            local_name=prop.local_name or _local(prop.iri),
+        )
+        return store.to_table(columns=columns)
+
     def create_snapshot(self, name: str) -> SnapshotId:
         """Pin a named snapshot at the current bundle LSN.
 
@@ -641,6 +767,15 @@ class Database:
                     return candidate
             raise CaracalError(code="CDB-6021", message=f"class not found in catalog: {iri!r}")
         return cls
+
+    def _find_property(self, iri: str) -> Any:
+        prop = self._catalog.property_by_iri(iri)
+        if prop is None:
+            for candidate in self._catalog.properties:
+                if (candidate.local_name or _local(candidate.iri)) == iri:
+                    return candidate
+            raise CaracalError(code="CDB-6021", message=f"property not found in catalog: {iri!r}")
+        return prop
 
     def _merge_class(
         self,
@@ -1996,6 +2131,15 @@ def _external_id_map(db: Database, *, key_col: str) -> dict[Any, int]:
     return result
 
 
+def _require_table_columns(table: pa.Table, columns: tuple[str, ...], what: str) -> None:
+    missing = [name for name in columns if name not in table.column_names]
+    if missing:
+        raise CaracalError(
+            code="CDB-7011" if what == "node table" else "CDB-7021",
+            message=f"{what} is missing required column(s): {', '.join(missing)}",
+        )
+
+
 def _resolve_external_node_id(id_map: Mapping[Any, int], value: Any, column: str) -> int:
     if value not in id_map:
         raise CaracalError(
@@ -2004,6 +2148,25 @@ def _resolve_external_node_id(id_map: Mapping[Any, int], value: Any, column: str
             hint="insert the node table before inserting edges",
         )
     return int(id_map[value])
+
+
+def _resolve_external_node_array(
+    id_map: Mapping[Any, int],
+    values: pa.Array | pa.ChunkedArray,
+    column: str,
+) -> pa.Array:
+    unique_values = values.unique().to_pylist()
+    missing = [value for value in unique_values if value not in id_map]
+    if missing:
+        value = missing[0]
+        raise CaracalError(
+            code="CDB-7021",
+            message=f"edge {column!r} references unknown node_id: {value!r}",
+            hint="insert the node table before inserting edges",
+        )
+    lookup_gids = pa.array([id_map[value] for value in unique_values], type=pa.uint64())
+    indices = pa.compute.index_in(values, value_set=pa.array(unique_values))
+    return pa.compute.take(lookup_gids, indices)
 
 
 def _edge_table(rows: list[dict[str, Any]]) -> pa.Table:
