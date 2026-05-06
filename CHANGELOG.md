@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.5] - 2026-05-06
+
+Patch release for Arrow-native graph table workflows and documentation polish.
+
+### Added
+
+- Added direct `pyarrow.Table` support for `insert_nodes`, `insert_node_table`,
+  and `insert_edge_table`.
+- Added `insert_node_table_arrow` and `insert_edge_table_arrow` helpers for
+  Arrow-first node and edge ingestion without row-dict conversion.
+- Added `node_table` and `edge_table` APIs for reading stored node and edge
+  data back as Arrow tables.
+- Added example `.crcl` bundles for simple, weighted, and complex graph
+  inspection workflows.
+
+### Changed
+
+- Reorganized the API documentation into focused storage, graph, ML, IO,
+  ontology, extension, and query-engine pages.
+- Refreshed Quickstart, tour, guide, and concept examples with executable code
+  snippets and package-relative example paths.
+- Improved documentation diagrams, theme palette behavior, and quickstart code
+  checking for absolute paths and output readability.
+
 ## [0.2.4] - 2026-05-03
 
 Patch release for snapshot reads and storage scan cleanup.
