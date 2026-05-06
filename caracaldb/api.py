@@ -127,6 +127,24 @@ class NodeQuery:
     ``NodeQuery`` is intentionally small: equality predicates are evaluated
     with Arrow kernels, and the result stays as a ``pyarrow.Table`` until the
     caller asks for Python rows.
+
+    Examples
+    --------
+    ```python
+    import tempfile
+    from pathlib import Path
+
+    import caracaldb as cdb
+
+    root = tempfile.TemporaryDirectory()
+    with cdb.connect(Path(root.name) / "demo") as db:
+        db.insert_node_table(
+            [{"node_id": "person/tom", "type": "Person", "name": "Tom Hanks"}]
+        )
+        db.nodes("Person").where(name="Tom Hanks").select("node_id").rows()
+    # [{'node_id': 'person/tom'}]
+    root.cleanup()
+    ```
     """
 
     _db: Database

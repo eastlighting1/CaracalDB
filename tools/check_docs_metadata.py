@@ -31,7 +31,7 @@ REQUIRED_KEYS = ("applies_to:", "status:", "last_updated:", "engine_status:")
 
 
 def is_public_page(path: Path) -> bool:
-    if "_generated" in path.parts or "release" in path.parts:
+    if "_generated" in path.parts or "legacy" in path.parts or "release" in path.parts:
         return False
     if path in LEGACY_PATHS:
         return False

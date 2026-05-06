@@ -16,6 +16,7 @@ exclude_docs: |
   errors/README.md
   milestones/**
   format/csr.md
+  legacy/**
   release/**
 
 theme:

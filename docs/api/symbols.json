@@ -13,6 +13,12 @@
   },
   {
     "kind": "class",
+    "name": "caracaldb.NodeQuery",
+    "summary": "Fluent node table query.",
+    "url": "api/caracaldb/#nodequery"
+  },
+  {
+    "kind": "class",
     "name": "caracaldb.ResourceRef",
     "summary": "Resolved CaracalDB resource identity.",
     "url": "api/caracaldb/#resourceref"
