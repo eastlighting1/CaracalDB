@@ -1,7 +1,7 @@
 ---
 applies_to: v0.2.x
 status: stable
-last_updated: 2026-05-04
+last_updated: 2026-05-06
 engine_status: python-reference; rust-engine-planned
 ---
 
@@ -19,6 +19,33 @@ GNN neighbor sampling.
 | CSC | Incoming neighbors (`dst → [src]`) | Reverse traversal, in-degree queries |
 
 Both share the same physical file format — CSC is CSR with `src` and `dst` columns swapped.
+
+## Database traversal API
+
+`Database` exposes adjacency helpers that build and reuse CSR/CSC indexes lazily:
+
+```python
+import caracaldb as cdb
+
+with cdb.connect("movies") as db:
+    tom = db.nodes("Person").where(name="Tom Hanks").first()
+    assert tom is not None
+
+    acted_in = db.out(tom["node_id"], "ACTED_IN")
+    actors = db.in_("movie/forrest-gump", "ACTED_IN")
+    acted_count = db.degree(tom["node_id"], "ACTED_IN")
+    shared_movies = db.common_neighbors("person/tom", "person/meg", "ACTED_IN")
+    ranked = db.overlap("person/tom", ["person/meg", "person/kevin"], "ACTED_IN", top_k=10)
+```
+
+The traversal helpers accept an internal id, a `ResourceRef`, or a stored
+`node_id` value and return Arrow tables. `out` and `in_` normalize traversal
+results to `src`/`dst` columns, while `common_neighbors` and `overlap` return
+internal neighbor ids for recommendation-style follow-up queries.
+
+When node or edge batches are appended through `Database`, derived graph index
+files are invalidated automatically so the next traversal rebuilds against the
+latest bundle state.
 
 ## Building indexes
 

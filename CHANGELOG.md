@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.6] - 2026-05-06
+
+Patch release for graph query and adjacency index APIs.
+
+### Added
+
+- Added `db.nodes("Class").where(...).select(...)` via `NodeQuery` for
+  Arrow-backed equality filtering, counting, first-row lookup, and row/table
+  materialization.
+- Added public adjacency helpers: `db.out(...)`, `db.in_(...)`, and
+  `db.degree(...)`, backed by the existing lazy CSR/CSC graph indexes.
+- Added `db.common_neighbors(...)` and `db.overlap(...)` for overlap-style
+  recommendation queries over indexed neighbor sets.
+- Added tests covering external `node_id` resolution, outgoing/incoming
+  traversal, degree lookup, common-neighbor overlap, and stale adjacency index
+  rebuilds.
+
+### Changed
+
+- Reuse cached CSR/CSC readers per relation and direction, while detecting
+  stale on-disk index files by vertex and edge counts before traversal.
+- Invalidate derived graph index files automatically after node or edge appends
+  through `Database`.
+- Documented the new database-level traversal API in the graph API reference.
+
 ## [0.2.5] - 2026-05-06
 
 Patch release for Arrow-native graph table workflows and documentation polish.

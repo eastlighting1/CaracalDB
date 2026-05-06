@@ -14,6 +14,7 @@ import shutil
 import tempfile
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
+from numbers import Integral
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -117,6 +118,61 @@ class Result:
 
     def record_batches(self) -> Iterator[pa.RecordBatch]:
         return iter(self._batches)
+
+
+@dataclass(frozen=True, slots=True)
+class NodeQuery:
+    """Fluent node table query.
+
+    ``NodeQuery`` is intentionally small: equality predicates are evaluated
+    with Arrow kernels, and the result stays as a ``pyarrow.Table`` until the
+    caller asks for Python rows.
+    """
+
+    _db: Database
+    _class_name: str
+    _filters: Mapping[str, Any]
+    _columns: tuple[str, ...] | None = None
+
+    def where(self, **properties: Any) -> NodeQuery:
+        return replace(self, _filters={**self._filters, **properties})
+
+    def select(self, *columns: str) -> NodeQuery:
+        return replace(self, _columns=tuple(columns) if columns else None)
+
+    def arrow(self) -> pa.Table:
+        needed = set(self._columns or ())
+        needed.update(self._filters)
+        table = self._db.node_table(
+            self._class_name,
+            columns=sorted(needed) if self._columns is not None and needed else None,
+        )
+        for name, value in self._filters.items():
+            if name not in table.column_names:
+                raise CaracalError(
+                    code="CDB-6020",
+                    message=f"node filter column missing on {self._class_name!r}: {name!r}",
+                )
+            column = table[name]
+            if value is None:
+                mask = pa.compute.is_null(column)
+            else:
+                scalar = pa.scalar(value, type=table.schema.field(name).type)
+                mask = pa.compute.equal(column, scalar)
+            table = table.filter(mask)
+        if self._columns is not None:
+            return table.select(list(self._columns))
+        return table
+
+    def rows(self) -> list[dict[str, Any]]:
+        return self.arrow().to_pylist()
+
+    def count(self) -> int:
+        return self.arrow().num_rows
+
+    def first(self) -> dict[str, Any] | None:
+        rows = self.arrow().slice(0, 1).to_pylist()
+        return rows[0] if rows else None
 
 
 class Connection:
@@ -233,6 +289,9 @@ class Database:
     def sql(self, text: str, *, params: dict[str, Any] | None = None) -> Result:
         return self.cursor().sql(text, params=params)
 
+    def nodes(self, class_name: str) -> NodeQuery:
+        return NodeQuery(self, class_name, {})
+
     def define_class(
         self,
         name: str,
@@ -279,7 +338,9 @@ class Database:
             local_name=cls.local_name or _local(cls.iri),
             create=True,
         )
-        return store.append(table, created_lsn=self._next_lsn())
+        ref = store.append(table, created_lsn=self._next_lsn())
+        self._invalidate_graph_indexes()
+        return ref
 
     def insert_node_table(
         self,
@@ -420,6 +481,7 @@ class Database:
                 create=True,
             )
             refs[relation] = store.append(_edge_table(group), created_lsn=self._next_lsn())
+            self._invalidate_graph_indexes(relation)
         return refs
 
     def insert_edge_table_arrow(
@@ -467,6 +529,7 @@ class Database:
                 create=True,
             )
             refs[relation] = store.append(group, created_lsn=self._next_lsn())
+            self._invalidate_graph_indexes(relation)
         return refs
 
     def insert_triples(
@@ -733,6 +796,130 @@ class Database:
         )
         return store.to_table(columns=columns)
 
+    def out(
+        self,
+        node: Any | Iterable[Any],
+        edge_type: str,
+        *,
+        node_key_col: str = "node_id",
+        return_eids: bool = False,
+    ) -> pa.Table:
+        """Return outgoing adjacency as an Arrow table with ``src`` and ``dst``."""
+        forward, _ = _readers_for_relation(self, edge_type, "out")
+        if forward is None:
+            return _empty_adjacency_table(return_eids=return_eids)
+        return _adjacency_table(
+            self,
+            forward,
+            node,
+            direction="out",
+            node_key_col=node_key_col,
+            return_eids=return_eids,
+        )
+
+    def in_(
+        self,
+        node: Any | Iterable[Any],
+        edge_type: str,
+        *,
+        node_key_col: str = "node_id",
+        return_eids: bool = False,
+    ) -> pa.Table:
+        """Return incoming adjacency as an Arrow table with normalized ``src`` and ``dst``."""
+        _, reverse = _readers_for_relation(self, edge_type, "in")
+        if reverse is None:
+            return _empty_adjacency_table(return_eids=return_eids)
+        return _adjacency_table(
+            self,
+            reverse,
+            node,
+            direction="in",
+            node_key_col=node_key_col,
+            return_eids=return_eids,
+        )
+
+    def degree(
+        self,
+        node: Any | Iterable[Any],
+        edge_type: str,
+        *,
+        direction: str = "out",
+        node_key_col: str = "node_id",
+    ) -> int | pa.Table:
+        """Return adjacency degree for one node, or a table for many nodes."""
+        if direction not in {"out", "in", "both"}:
+            raise CaracalError(
+                code="CDB-6020",
+                message=f"degree direction must be 'out', 'in', or 'both', got {direction!r}",
+            )
+        ids, scalar = _resolve_graph_node_ids(self, node, node_key_col=node_key_col)
+        forward, reverse = _readers_for_relation(self, edge_type, direction)
+        degrees = _degree_array(ids, forward if direction in {"out", "both"} else None)
+        if direction in {"in", "both"}:
+            degrees = degrees + _degree_array(ids, reverse)
+        if scalar:
+            return int(degrees[0])
+        return pa.table(
+            {
+                "node_id": pa.array(ids, type=pa.uint64()),
+                "degree": pa.array(degrees, type=pa.uint64()),
+            }
+        )
+
+    def common_neighbors(
+        self,
+        left: Any,
+        right: Any,
+        edge_type: str,
+        *,
+        direction: str = "out",
+        node_key_col: str = "node_id",
+    ) -> pa.Table:
+        """Return the common neighbor ids for two nodes under one edge type."""
+        left_id, _ = _resolve_graph_node_ids(self, left, node_key_col=node_key_col)
+        right_id, _ = _resolve_graph_node_ids(self, right, node_key_col=node_key_col)
+        left_neighbors = _neighbor_ids(self, int(left_id[0]), edge_type, direction=direction)
+        right_neighbors = _neighbor_ids(self, int(right_id[0]), edge_type, direction=direction)
+        import numpy as np
+
+        common = np.intersect1d(left_neighbors, right_neighbors, assume_unique=False)
+        return pa.table({"node_id": pa.array(common, type=pa.uint64())})
+
+    def overlap(
+        self,
+        node: Any,
+        candidates: Iterable[Any],
+        edge_type: str,
+        *,
+        direction: str = "out",
+        node_key_col: str = "node_id",
+        top_k: int | None = None,
+    ) -> pa.Table:
+        """Rank candidate nodes by common-neighbor overlap with ``node``."""
+        seed_id, _ = _resolve_graph_node_ids(self, node, node_key_col=node_key_col)
+        candidate_ids, _ = _resolve_graph_node_ids(self, candidates, node_key_col=node_key_col)
+        seed_neighbors = _neighbor_ids(self, int(seed_id[0]), edge_type, direction=direction)
+        import numpy as np
+
+        rows: list[tuple[int, int]] = []
+        for candidate_id in candidate_ids:
+            candidate_neighbors = _neighbor_ids(
+                self, int(candidate_id), edge_type, direction=direction
+            )
+            overlap = np.intersect1d(seed_neighbors, candidate_neighbors, assume_unique=False).size
+            rows.append((int(candidate_id), int(overlap)))
+        rows.sort(key=lambda item: (-item[1], item[0]))
+        if top_k is not None:
+            if top_k < 0:
+                raise CaracalError(code="CDB-6020", message="top_k must be >= 0")
+            rows = rows[:top_k]
+        return pa.table(
+            {
+                "node_id": pa.array([row[0] for row in rows], type=pa.uint64()),
+                "overlap": pa.array([row[1] for row in rows], type=pa.uint64()),
+            }
+        )
+
     def create_snapshot(self, name: str) -> SnapshotId:
         """Pin a named snapshot at the current bundle LSN.
 
@@ -815,6 +1002,26 @@ class Database:
         prop = self._catalog.register_property(iri=property_iri, local_name=name)
         save_catalog(self._bundle, self._catalog)
         return prop
+
+    def _invalidate_graph_indexes(self, relation_local: str | None = None) -> None:
+        if relation_local is None:
+            self._csr_cache.clear()
+            graph_dir = self._bundle.child("graph")
+            targets = list(graph_dir.glob("*/*.csr")) + list(graph_dir.glob("*/*.csc"))
+            degree_cache = getattr(self, "_degree_cache", None)
+            if degree_cache is not None:
+                degree_cache.clear()
+        else:
+            for key in list(self._csr_cache):
+                if key == relation_local or key.startswith(f"{relation_local}@"):
+                    del self._csr_cache[key]
+            graph_dir = self._bundle.child("graph", relation_local)
+            targets = list(graph_dir.glob("*.csr")) + list(graph_dir.glob("*.csc"))
+            degree_cache = getattr(self, "_degree_cache", None)
+            if degree_cache is not None:
+                degree_cache.pop(relation_local, None)
+        for target in targets:
+            target.unlink(missing_ok=True)
 
 
 def connect(path: str | Path, *, mode: str = "rw", format: str = "auto") -> Database:
@@ -1477,6 +1684,140 @@ def _build_degree_lookup(db: Database, relation_local: str) -> np.ndarray:
     return degrees
 
 
+def _resolve_graph_node_ids(
+    db: Database,
+    node: Any | Iterable[Any],
+    *,
+    node_key_col: str,
+) -> tuple[list[int], bool]:
+    if _is_scalar_node_ref(node):
+        values = [node]
+        scalar = True
+    else:
+        values = list(node)
+        scalar = False
+    id_map = _external_id_map(db, key_col=node_key_col)
+    return [_resolve_graph_node_id(id_map, value, node_key_col) for value in values], scalar
+
+
+def _is_scalar_node_ref(value: Any) -> bool:
+    if isinstance(value, ResourceRef | str | bytes):
+        return True
+    return not isinstance(value, Iterable)
+
+
+def _resolve_graph_node_id(id_map: Mapping[Any, int], value: Any, node_key_col: str) -> int:
+    if isinstance(value, ResourceRef):
+        return value.internal_id
+    if value in id_map:
+        return id_map[value]
+    if isinstance(value, Integral) and not isinstance(value, bool) and int(value) >= 0:
+        return int(value)
+    raise CaracalError(
+        code="CDB-7021",
+        message=f"unknown graph node reference for {node_key_col!r}: {value!r}",
+        hint="pass an internal id, ResourceRef, or an existing node_id value",
+    )
+
+
+def _empty_adjacency_table(*, return_eids: bool = False) -> pa.Table:
+    fields = [pa.field("src", pa.uint64()), pa.field("dst", pa.uint64())]
+    if return_eids:
+        fields.append(pa.field("eid", pa.uint64()))
+    return pa.Table.from_batches([], schema=pa.schema(fields))
+
+
+def _adjacency_table(
+    db: Database,
+    reader: CsrReader,
+    node: Any | Iterable[Any],
+    *,
+    direction: str,
+    node_key_col: str,
+    return_eids: bool,
+) -> pa.Table:
+    ids, _ = _resolve_graph_node_ids(db, node, node_key_col=node_key_col)
+    import numpy as np
+
+    seed_ids = np.asarray(ids, dtype=np.uint64)
+    if seed_ids.size == 0:
+        return _empty_adjacency_table(return_eids=return_eids)
+    valid = seed_ids < reader.num_vertices
+    if not bool(valid.any()):
+        return _empty_adjacency_table(return_eids=return_eids)
+    seeds = seed_ids[valid]
+    if return_eids:
+        src_rep, dst_flat, eid_flat = reader.batch_neighbors(seeds, return_eids=True)
+    else:
+        src_rep, dst_flat = reader.batch_neighbors(seeds)
+        eid_flat = None
+
+    if direction == "out":
+        src = src_rep
+        dst = dst_flat
+    elif direction == "in":
+        src = dst_flat
+        dst = src_rep
+    else:
+        raise CaracalError(code="CDB-6020", message=f"unsupported adjacency direction: {direction}")
+    if src.size == 0:
+        return _empty_adjacency_table(return_eids=return_eids)
+
+    arrays: list[pa.Array] = [pa.array(src, type=pa.uint64()), pa.array(dst, type=pa.uint64())]
+    names = ["src", "dst"]
+    if return_eids:
+        assert eid_flat is not None
+        arrays.append(pa.array(eid_flat, type=pa.uint64()))
+        names.append("eid")
+    return pa.table(arrays, names=names)
+
+
+def _degree_array(ids: list[int], reader: CsrReader | None) -> np.ndarray:
+    import numpy as np
+
+    degrees = np.zeros(len(ids), dtype=np.uint64)
+    if reader is None or not ids:
+        return degrees
+    seed_ids = np.asarray(ids, dtype=np.uint64)
+    valid = seed_ids < reader.num_vertices
+    if bool(valid.any()):
+        degrees[valid] = reader.degrees(seed_ids[valid]).astype(np.uint64)
+    return degrees
+
+
+def _neighbor_ids(
+    db: Database,
+    node_id: int,
+    edge_type: str,
+    *,
+    direction: str,
+) -> np.ndarray:
+    import numpy as np
+
+    if direction == "out":
+        forward, _ = _readers_for_relation(db, edge_type, "out")
+        readers = [forward]
+    elif direction == "in":
+        _, reverse = _readers_for_relation(db, edge_type, "in")
+        readers = [reverse]
+    elif direction == "both":
+        forward, reverse = _readers_for_relation(db, edge_type, "both")
+        readers = [forward, reverse]
+    else:
+        raise CaracalError(
+            code="CDB-6020",
+            message=f"direction must be 'out', 'in', or 'both', got {direction!r}",
+        )
+    pieces: list[np.ndarray] = []
+    for reader in readers:
+        if reader is None or node_id >= reader.num_vertices:
+            continue
+        pieces.append(reader.neighbors_of(node_id))
+    if not pieces:
+        return np.empty(0, dtype=np.uint64)
+    return np.unique(np.concatenate(pieces).astype(np.uint64, copy=False))
+
+
 def _translate_pattern_expr(
     expr: ta.Expr | None,
     aliases: set[str],
@@ -1787,10 +2128,17 @@ def _readers_for_relation(
     *,
     snapshot_lsn: int | None = None,
 ) -> tuple[CsrReader | None, CsrReader | None]:
+    if direction not in {"out", "in", "both"}:
+        raise CaracalError(
+            code="CDB-6020",
+            message=f"relation reader direction must be 'out', 'in', or 'both', got {direction!r}",
+        )
     cache: dict[str, dict[str, CsrReader]] = db._csr_cache  # type: ignore[attr-defined]
     cache_key = f"{relation_local}@{snapshot_lsn}" if snapshot_lsn is not None else relation_local
-    if cache_key in cache:
-        entry = cache[cache_key]
+    entry = cache.setdefault(cache_key, {})
+    needs_forward = direction in ("out", "both")
+    needs_reverse = direction in ("in", "both")
+    if (not needs_forward or "forward" in entry) and (not needs_reverse or "reverse" in entry):
         return entry.get("forward"), entry.get("reverse")
 
     prop = _find_property_by_local_name(db, relation_local)
@@ -1813,24 +2161,40 @@ def _readers_for_relation(
     edge_input = (
         edge_store.to_table(snapshot_lsn=snapshot_lsn) if snapshot_lsn is not None else edge_store
     )
+    expected_edges = (
+        edge_input.num_rows if isinstance(edge_input, pa.Table) else edge_input.num_rows
+    )
 
-    forward: CsrReader | None = None
-    reverse: CsrReader | None = None
-    if direction in ("out", "both"):
-        if not forward_path.is_file():
+    forward: CsrReader | None = entry.get("forward")
+    reverse: CsrReader | None = entry.get("reverse")
+    if needs_forward and forward is None:
+        forward = _fresh_csr_reader(
+            forward_path, num_vertices=num_vertices, num_edges=expected_edges
+        )
+        if forward is None:
             build_csr(edge_input, num_vertices=num_vertices, out_path=forward_path, with_eids=True)
-        forward = CsrReader(forward_path)
-    if direction in ("in", "both"):
-        if not reverse_path.is_file():
+            forward = CsrReader(forward_path)
+        entry["forward"] = forward
+    if needs_reverse and reverse is None:
+        reverse = _fresh_csr_reader(
+            reverse_path, num_vertices=num_vertices, num_edges=expected_edges
+        )
+        if reverse is None:
             build_csc(edge_input, num_vertices=num_vertices, out_path=reverse_path, with_eids=True)
-        reverse = CsrReader(reverse_path)
+            reverse = CsrReader(reverse_path)
+        entry["reverse"] = reverse
 
-    cache[cache_key] = {}
-    if forward is not None:
-        cache[cache_key]["forward"] = forward
-    if reverse is not None:
-        cache[cache_key]["reverse"] = reverse
     return forward, reverse
+
+
+def _fresh_csr_reader(path: Path, *, num_vertices: int, num_edges: int) -> CsrReader | None:
+    if not path.is_file():
+        return None
+    reader = CsrReader(path)
+    if reader.num_vertices == num_vertices and reader.num_edges == num_edges:
+        return reader
+    path.unlink(missing_ok=True)
+    return None
 
 
 def _global_vertex_count(db: Database) -> int:
@@ -2253,4 +2617,4 @@ def _escape_turtle_literal(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
-__all__ = ["Connection", "Database", "ResourceRef", "Result", "connect"]
+__all__ = ["Connection", "Database", "NodeQuery", "ResourceRef", "Result", "connect"]

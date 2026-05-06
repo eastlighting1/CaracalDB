@@ -283,6 +283,79 @@ def test_insert_edge_table_accepts_arrow_table_and_exposes_edge_table(tmp_path: 
     assert table.to_pylist() == [{"src": 0, "dst": 1, "type": "HOSTED", "weight": 1.0}]
 
 
+def test_nodes_query_filters_with_arrow_kernels(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "node-query") as db:
+        db.insert_node_table(
+            [
+                {"node_id": "person/tom", "type": "Person", "name": "Tom Hanks"},
+                {"node_id": "person/meg", "type": "Person", "name": "Meg Ryan"},
+                {"node_id": "movie/forrest", "type": "Movie", "name": "Forrest Gump"},
+            ]
+        )
+
+        query = db.nodes("Person").where(name="Tom Hanks").select("node_id", "name")
+        count = query.count()
+        first = query.first()
+        rows = query.rows()
+
+    assert count == 1
+    assert first == {"node_id": "person/tom", "name": "Tom Hanks"}
+    assert rows == [{"node_id": "person/tom", "name": "Tom Hanks"}]
+
+
+def test_adjacency_api_uses_external_ids_for_out_in_and_degree(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "adjacency-api") as db:
+        db.insert_node_table(
+            [
+                {"node_id": "person/tom", "type": "Person", "name": "Tom Hanks"},
+                {"node_id": "person/meg", "type": "Person", "name": "Meg Ryan"},
+                {"node_id": "movie/forrest", "type": "Movie", "name": "Forrest Gump"},
+                {"node_id": "movie/sleepless", "type": "Movie", "name": "Sleepless in Seattle"},
+            ]
+        )
+        db.insert_edge_table(
+            [
+                {"src": "person/tom", "dst": "movie/forrest", "type": "ACTED_IN"},
+                {"src": "person/tom", "dst": "movie/sleepless", "type": "ACTED_IN"},
+                {"src": "person/meg", "dst": "movie/forrest", "type": "ACTED_IN"},
+            ]
+        )
+
+        outgoing = db.out("person/tom", "ACTED_IN").to_pylist()
+        incoming = db.in_("movie/forrest", "ACTED_IN").to_pylist()
+        degree = db.degree("person/tom", "ACTED_IN")
+        common = db.common_neighbors("person/tom", "person/meg", "ACTED_IN").to_pylist()
+        overlap = db.overlap(
+            "person/tom", ["person/meg", "movie/forrest"], "ACTED_IN", top_k=1
+        ).to_pylist()
+
+    assert outgoing == [{"src": 0, "dst": 2}, {"src": 0, "dst": 3}]
+    assert incoming == [{"src": 0, "dst": 2}, {"src": 1, "dst": 2}]
+    assert degree == 2
+    assert common == [{"node_id": 2}]
+    assert overlap == [{"node_id": 1, "overlap": 1}]
+
+
+def test_adjacency_api_rebuilds_stale_indexes_after_edge_insert(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "adjacency-stale-index") as db:
+        db.insert_node_table(
+            [
+                {"node_id": "person/tom", "type": "Person", "name": "Tom Hanks"},
+                {"node_id": "movie/forrest", "type": "Movie", "name": "Forrest Gump"},
+                {"node_id": "movie/sleepless", "type": "Movie", "name": "Sleepless in Seattle"},
+            ]
+        )
+        db.insert_edge_table([{"src": "person/tom", "dst": "movie/forrest", "type": "ACTED_IN"}])
+
+        assert db.out("person/tom", "ACTED_IN").to_pylist() == [{"src": 0, "dst": 1}]
+
+        db.insert_edge_table([{"src": "person/tom", "dst": "movie/sleepless", "type": "ACTED_IN"}])
+
+        outgoing = db.out("person/tom", "ACTED_IN").to_pylist()
+
+    assert outgoing == [{"src": 0, "dst": 1}, {"src": 0, "dst": 2}]
+
+
 def test_import_resource_accepts_neo4j_json_and_creates_placeholder_targets(
     tmp_path: Path,
 ) -> None:
