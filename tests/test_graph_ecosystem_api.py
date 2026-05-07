@@ -21,9 +21,7 @@ def test_vector_index_lifecycle_search_filter_and_reopen(tmp_path: Path) -> None
                     "type": pa.array(["Chunk", "Chunk", "Chunk"]),
                     "source_type": pa.array(["document", "note", "document"]),
                     "text": pa.array(["alpha", "beta", "near alpha"]),
-                    "embedding": _embedding_array(
-                        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.9, 0.1, 0.0], 3
-                    ),
+                    "embedding": _embedding_array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.9, 0.1, 0.0], 3),
                 }
             )
         )
@@ -214,9 +212,7 @@ def test_tuft_vector_search_call_and_vector_projection_ordering(tmp_path: Path) 
                 {
                     "node_id": pa.array(["c1", "c2", "c3"]),
                     "type": pa.array(["Chunk", "Chunk", "Chunk"]),
-                    "embedding": _embedding_array(
-                        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.8, 0.2, 0.0], 3
-                    ),
+                    "embedding": _embedding_array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.8, 0.2, 0.0], 3),
                 }
             )
         )
@@ -227,26 +223,20 @@ def test_tuft_vector_search_call_and_vector_projection_ordering(tmp_path: Path) 
             dimension=3,
         )
 
-        call_rows = db.sql(
-            """
+        call_rows = db.sql("""
             CALL vector.search('chunk_embedding_hnsw', [1.0, 0.0, 0.0], 3)
             YIELD node_id, score
             RETURN node_id, score
             ORDER BY score DESC
             LIMIT 2
-            """
-        ).rows()
-        projected_rows = db.sql(
-            """
+            """).rows()
+        projected_rows = db.sql("""
             MATCH (c:Chunk)
             RETURN c.node_id, cosine_similarity(c.embedding, [1.0, 0.0, 0.0]) AS score
             ORDER BY score DESC
             LIMIT 2
-            """
-        ).rows()
-        profile = db.profile(
-            "CALL vector.search('chunk_embedding_hnsw', [1.0, 0.0, 0.0], 1)"
-        )
+            """).rows()
+        profile = db.profile("CALL vector.search('chunk_embedding_hnsw', [1.0, 0.0, 0.0], 1)")
 
     assert [row["node_id"] for row in call_rows] == ["c1", "c3"]
     assert [row["node_id"] for row in projected_rows] == ["c1", "c3"]
@@ -271,22 +261,18 @@ def test_tuft_variable_length_paths_return_path_objects(tmp_path: Path) -> None:
             ]
         )
 
-        rows = db.sql(
-            """
+        rows = db.sql("""
             MATCH p = (a:Entity)-[:RELATED_TO*1..2]->(c:Entity)
             WHERE a.node_id = 'a' AND c.node_id = 'c'
             RETURN p, length(p) AS hops, c.node_id AS target
             ORDER BY hops DESC
             LIMIT 2
-            """
-        ).rows()
-        profile = db.profile(
-            """
+            """).rows()
+        profile = db.profile("""
             MATCH p = (a:Entity)-[:RELATED_TO*1..2]->(c:Entity)
             RETURN p
             LIMIT 1
-            """
-        )
+            """)
         caps = db.capabilities()
 
     assert [row["hops"] for row in rows] == [2, 1]

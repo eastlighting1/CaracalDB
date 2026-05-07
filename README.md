@@ -229,7 +229,15 @@ examples/    Runnable examples and case-study notebooks
 
 ## Project Status
 
-CaracalDB is pre-release and not yet suitable for production use. M0 through M5 are accepted in `docs/milestones/`, and the engine is currently in the v0.2.x docs and benchmark sweep. Multi-hop pattern matching, rel-type unions, and the `degree()` graph built-in are wired through `Connection.sql`; variable-length paths, multi-label nodes, and the remaining graph-topology built-ins (`neighbors`, `shortest_path`, `k_hop`) are tracked carry-overs.
+CaracalDB is pre-release and not yet suitable for production use. M0 through
+M5 are accepted in `docs/milestones/`, and the engine is currently in the
+v0.2.x docs and benchmark sweep. Multi-hop pattern matching, rel-type unions,
+Tuft bounded variable-length paths, vector search calls, and the `degree()`
+graph built-in are wired through `Connection.sql`. Python-level graph
+ecosystem primitives now include vector index lifecycle, vector search,
+neighbors, `k_hop`, bounded `paths`, `shortest_path`, Arrow batch upsert,
+property-index metadata, capabilities, and profile/explain telemetry.
+Multi-label nodes remain a carry-over.
 
 The closest peers — embedded analytical graph engines — are [kuzu](https://github.com/kuzudb/kuzu), [DuckPGQ](https://duckpgq.org), and Memgraph's embedded library mode. Comparisons against server-tier graph databases (Neo4j Enterprise, Neptune, TigerGraph) are not the right reference frame for an embedded `.crcl` file.
 

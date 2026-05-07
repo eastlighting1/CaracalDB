@@ -1,7 +1,7 @@
 ---
 applies_to: v0.2.x
 status: stable
-last_updated: 2026-05-06
+last_updated: 2026-05-07
 engine_status: python-reference; rust-engine-planned
 ---
 
@@ -46,6 +46,86 @@ internal neighbor ids for recommendation-style follow-up queries.
 When node or edge batches are appended through `Database`, derived graph index
 files are invalidated automatically so the next traversal rebuilds against the
 latest bundle state.
+
+## Graph ecosystem primitives
+
+v0.2.7 adds higher-level graph ecosystem APIs for semantic retrieval and
+evidence/path workloads:
+
+```python
+import pyarrow as pa
+import caracaldb as cdb
+
+with cdb.connect("knowledge") as db:
+    db.upsert_node_table_arrow(
+        pa.table(
+            {
+                "node_id": ["chunk/1", "chunk/2"],
+                "type": ["Chunk", "Chunk"],
+                "text": ["alpha evidence", "beta evidence"],
+                "embedding": [[1.0, 0.0], [0.0, 1.0]],
+            }
+        )
+    )
+
+    db.create_vector_index(
+        name="chunk_embedding_hnsw",
+        node_type="Chunk",
+        property="embedding",
+        dimension=2,
+        metric="cosine",
+    )
+
+    seeds = db.vector_search(
+        index="chunk_embedding_hnsw",
+        query_vector=[1.0, 0.0],
+        top_k=1,
+        return_properties=["text"],
+    )
+
+    subgraph = db.k_hop(
+        seeds=[row["node_id"] for row in seeds.rows()],
+        edge_types=["MENTIONS", "RELATED_TO"],
+        depth=2,
+    )
+```
+
+Path APIs return Arrow-native path artifacts with stable node ids, edge ids,
+relation types, directions, edge properties, and optional weighted scores:
+
+```python
+paths = db.paths(
+    source="entity/a",
+    target="chunk/1",
+    edge_types=["RELATED_TO", "EVIDENCED_BY"],
+    max_depth=3,
+    score="sum",
+    score_property="weight",
+)
+
+path = db.shortest_path(
+    source="entity/a",
+    target="chunk/1",
+    edge_types=["RELATED_TO", "EVIDENCED_BY"],
+)
+```
+
+Tuft exposes the same substrate for semantic entry and bounded path matching:
+
+```tuft
+CALL vector.search('chunk_embedding_hnsw', [1.0, 0.0], 8)
+YIELD node_id, score
+RETURN node_id, score
+ORDER BY score DESC
+LIMIT 8
+```
+
+```tuft
+MATCH p = (a:Entity)-[:RELATED_TO*1..3]->(b:Chunk)
+RETURN p, length(p) AS hops, b.node_id
+ORDER BY hops DESC
+LIMIT 20
+```
 
 ## Building indexes
 

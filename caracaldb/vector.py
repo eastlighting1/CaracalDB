@@ -41,6 +41,13 @@ def cosine_similarity(a: Sequence[float] | np.ndarray, b: Sequence[float] | np.n
 
     If either vector has zero norm, CaracalDB returns ``0.0``. This keeps the
     function total and makes zero-vector behavior explicit for ranking code.
+
+    Examples
+    --------
+    ```python
+    cosine_similarity([1.0, 0.0], [1.0, 0.0])
+    # 1.0
+    ```
     """
 
     left, right = _pair(a, b)
@@ -51,20 +58,44 @@ def cosine_similarity(a: Sequence[float] | np.ndarray, b: Sequence[float] | np.n
 
 
 def cosine_distance(a: Sequence[float] | np.ndarray, b: Sequence[float] | np.ndarray) -> float:
-    """Return ``1 - cosine_similarity(a, b)``."""
+    """Return ``1 - cosine_similarity(a, b)``.
+
+    Examples
+    --------
+    ```python
+    cosine_distance([1.0, 0.0], [1.0, 0.0])
+    # 0.0
+    ```
+    """
 
     return float(1.0 - cosine_similarity(a, b))
 
 
 def dot_product(a: Sequence[float] | np.ndarray, b: Sequence[float] | np.ndarray) -> float:
-    """Return dot product for equal-dimension vectors."""
+    """Return dot product for equal-dimension vectors.
+
+    Examples
+    --------
+    ```python
+    dot_product([1.0, 2.0], [3.0, 4.0])
+    # 11.0
+    ```
+    """
 
     left, right = _pair(a, b)
     return float(np.dot(left, right))
 
 
 def l2_distance(a: Sequence[float] | np.ndarray, b: Sequence[float] | np.ndarray) -> float:
-    """Return Euclidean distance for equal-dimension vectors."""
+    """Return Euclidean distance for equal-dimension vectors.
+
+    Examples
+    --------
+    ```python
+    l2_distance([0.0, 0.0], [3.0, 4.0])
+    # 5.0
+    ```
+    """
 
     left, right = _pair(a, b)
     return float(np.linalg.norm(left - right))

@@ -3223,9 +3223,11 @@ def _explain_query(db: Database, text: str) -> dict[str, Any]:
             "physical_plan": "VariableLengthPath",
             "indexes_used": [],
             "vector_index_used": None,
-            "limit": _eval_int_literal(query.modifiers.limit, "LIMIT")
-            if query.modifiers.limit is not None
-            else None,
+            "limit": (
+                _eval_int_literal(query.modifiers.limit, "LIMIT")
+                if query.modifiers.limit is not None
+                else None
+            ),
             "fallback_flags": [],
         }
     op, _snapshot, limit, logical = _compile_sql_operator(db, text)

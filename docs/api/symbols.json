@@ -40,5 +40,29 @@
     "name": "caracaldb.connect",
     "summary": "Open or create a CaracalDB database.",
     "url": "api/caracaldb/#connect"
+  },
+  {
+    "kind": "function",
+    "name": "caracaldb.cosine_distance",
+    "summary": "Return ``1 - cosine_similarity(a, b)``.",
+    "url": "api/caracaldb/#cosine_distance"
+  },
+  {
+    "kind": "function",
+    "name": "caracaldb.cosine_similarity",
+    "summary": "Return cosine similarity.",
+    "url": "api/caracaldb/#cosine_similarity"
+  },
+  {
+    "kind": "function",
+    "name": "caracaldb.dot_product",
+    "summary": "Return dot product for equal-dimension vectors.",
+    "url": "api/caracaldb/#dot_product"
+  },
+  {
+    "kind": "function",
+    "name": "caracaldb.l2_distance",
+    "summary": "Return Euclidean distance for equal-dimension vectors.",
+    "url": "api/caracaldb/#l2_distance"
   }
 ]

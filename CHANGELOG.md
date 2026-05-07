@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.7] - 2026-05-07
+
+Patch release for graph ecosystem primitives needed by CaracalDB-only
+GraphRAG-style workloads.
+
+### Added
+
+- Added vector property search APIs: `create_vector_index`,
+  `list_vector_indexes`, `drop_vector_index`, `rebuild_vector_index`, and
+  `vector_search`, with persisted HNSW metadata under the `.crcl` bundle.
+- Added public vector distance helpers: `cosine_similarity`,
+  `cosine_distance`, `dot_product`, and `l2_distance`, plus Tuft projection
+  support for small-result vector scoring and ordering.
+- Added idempotent `upsert_node_table_arrow` and `upsert_edge_table_arrow`
+  APIs with inserted/updated/skipped/failed counters.
+- Added typed traversal primitives: `neighbors`, `k_hop`, `paths`, and
+  `shortest_path`, including edge-property filters and weighted path scoring.
+- Added minimal Tuft `CALL vector.search(...)` support for semantic entry
+  points that return Arrow-native result batches.
+- Added Tuft variable-length path execution for bounded patterns such as
+  `MATCH p = (a:Entity)-[:RELATED_TO*1..3]->(b:Entity) RETURN p, length(p)`.
+- Added capability discovery and machine-readable profile/explain output for
+  the new vector and path execution surfaces.
+
+### Changed
+
+- Updated Tuft ordering grammar so `ORDER BY ... DESC` is tokenized
+  consistently.
+- Kept GraphRAG application policy out of core; CaracalDB exposes reusable
+  graph, vector, path, Arrow, and telemetry primitives instead.
+
 ## [0.2.6] - 2026-05-06
 
 Patch release for graph query and adjacency index APIs.
