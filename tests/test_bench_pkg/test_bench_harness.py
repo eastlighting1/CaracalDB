@@ -8,6 +8,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from bench.harness import (  # noqa: E402  (path bootstrap above)
     RUNNERS,
+    bench_graph_ecosystem,
     bench_knn,
     compare_against_baseline,
     write_results,
@@ -15,7 +16,7 @@ from bench.harness import (  # noqa: E402  (path bootstrap above)
 
 
 def test_runners_registry_is_complete() -> None:
-    assert {"1hop", "2hop", "knn", "neighbor_sample"} <= set(RUNNERS)
+    assert {"1hop", "2hop", "knn", "neighbor_sample", "graph_ecosystem"} <= set(RUNNERS)
 
 
 def test_bench_knn_returns_well_formed_result() -> None:
@@ -23,6 +24,17 @@ def test_bench_knn_returns_well_formed_result() -> None:
     assert result["scenario"] == "knn"
     assert result["metric"] == "ms"
     assert isinstance(result["value"], float) and result["value"] >= 0.0
+
+
+def test_graph_ecosystem_bench_reports_native_modes() -> None:
+    result = bench_graph_ecosystem(n_nodes=200, n_edges=600, dim=8, top_k=4)
+    assert result["scenario"] == "graph_ecosystem"
+    assert result["semantic_entry_mode"] == "caracal_hnsw"
+    assert result["semantic_reentry_mode"] == "native_result_nodes"
+    assert result["relation_expand_mode"] == "neighbors_api"
+    assert result["fallback_flags"] == []
+    assert result["vector_index_used"] == "chunk_embedding_hnsw"
+    assert result["result_count"] == 4
 
 
 def test_write_and_read_baseline_round_trip(tmp_path: Path) -> None:

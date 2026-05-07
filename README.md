@@ -236,7 +236,8 @@ Tuft bounded variable-length paths, vector search calls, and the `degree()`
 graph built-in are wired through `Connection.sql`. Python-level graph
 ecosystem primitives now include vector index lifecycle, vector search,
 neighbors, `k_hop`, bounded `paths`, `shortest_path`, Arrow batch upsert,
-property-index metadata, capabilities, and profile/explain telemetry.
+materialized property/text lookup indexes, multi-seed path expansion,
+idempotent semantic-neighbor upserts, capabilities, and profile/explain telemetry.
 Multi-label nodes remain a carry-over.
 
 The closest peers — embedded analytical graph engines — are [kuzu](https://github.com/kuzudb/kuzu), [DuckPGQ](https://duckpgq.org), and Memgraph's embedded library mode. Comparisons against server-tier graph databases (Neo4j Enterprise, Neptune, TigerGraph) are not the right reference frame for an embedded `.crcl` file.

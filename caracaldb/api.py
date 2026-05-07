@@ -87,6 +87,9 @@ _RDF_TYPE_PREDICATES = {
 }
 _VECTOR_INDEX_MANIFEST = "indexes.json"
 _PROPERTY_INDEX_MANIFEST = "property_indexes.json"
+_TEXT_INDEX_MANIFEST = "text_indexes.json"
+_PROPERTY_INDEX_DIR = "property"
+_TEXT_INDEX_DIR = "text"
 _INDEX_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
 
 
@@ -378,6 +381,7 @@ class Database:
         )
         ref = store.append(table, created_lsn=self._next_lsn())
         self._invalidate_graph_indexes()
+        _mark_node_indexes_stale(self, class_name)
         return ref
 
     def insert_node_table(
@@ -520,6 +524,7 @@ class Database:
             )
             refs[relation] = store.append(_edge_table(group), created_lsn=self._next_lsn())
             self._invalidate_graph_indexes(relation)
+            _mark_edge_indexes_stale(self, relation)
         return refs
 
     def insert_edge_table_arrow(
@@ -568,6 +573,7 @@ class Database:
             )
             refs[relation] = store.append(group, created_lsn=self._next_lsn())
             self._invalidate_graph_indexes(relation)
+            _mark_edge_indexes_stale(self, relation)
         return refs
 
     def upsert_node_table_arrow(
@@ -1124,10 +1130,12 @@ class Database:
     def paths(
         self,
         *,
-        source: Any,
-        target: Any,
         edge_types: Iterable[str],
         max_depth: int,
+        source: Any | None = None,
+        target: Any | None = None,
+        sources: Iterable[Any] | None = None,
+        target_node_types: Iterable[str] | None = None,
         limit: int = 20,
         direction: str = "out",
         edge_filters: Mapping[str, Any] | None = None,
@@ -1135,8 +1143,61 @@ class Database:
         score: str | None = None,
         score_property: str = "weight",
         order: str = "desc",
+        path_score: str | None = None,
+        path_score_property: str | None = None,
+        return_properties: Iterable[str] | None = None,
+        max_paths_per_seed: int | None = None,
     ) -> Result:
-        """Return deterministic bounded paths between two nodes."""
+        """Return deterministic bounded paths.
+
+        The classic ``source`` + ``target`` form returns paths between one
+        pair of nodes. The ``sources`` + ``target_node_types`` form expands
+        many seeds in one call and returns ranked target candidates.
+        """
+
+        score_mode = path_score if path_score is not None else score
+        score_prop = path_score_property if path_score_property is not None else score_property
+        if sources is not None or target_node_types is not None:
+            if sources is None:
+                if source is None:
+                    raise CaracalError(
+                        code="CDB-6020",
+                        message="multi-seed paths require sources or source",
+                    )
+                sources = (source,)
+            if target_node_types is None:
+                raise CaracalError(
+                    code="CDB-6020",
+                    message="multi-seed paths require target_node_types",
+                )
+            source_values = (sources,) if _is_scalar_node_ref(sources) else tuple(sources)
+            target_types = (
+                (target_node_types,)
+                if isinstance(target_node_types, str)
+                else tuple(target_node_types)
+            )
+            return _multi_seed_paths(
+                self,
+                sources=source_values,
+                target_node_types=target_types,
+                edge_types=tuple(edge_types),
+                max_depth=max_depth,
+                limit=limit,
+                direction=direction,
+                edge_filters=dict(edge_filters or {}),
+                node_key_col=node_key_col,
+                score=score_mode,
+                score_property=score_prop,
+                order=order,
+                return_properties=tuple(return_properties or ()),
+                max_paths_per_seed=max_paths_per_seed,
+            )
+
+        if source is None or target is None:
+            raise CaracalError(
+                code="CDB-6020",
+                message="paths require source and target, or sources and target_node_types",
+            )
 
         return _paths(
             self,
@@ -1148,8 +1209,8 @@ class Database:
             direction=direction,
             edge_filters=dict(edge_filters or {}),
             node_key_col=node_key_col,
-            score=score,
-            score_property=score_property,
+            score=score_mode,
+            score_property=score_prop,
             order=order,
         )
 
@@ -1200,6 +1261,47 @@ class Database:
 
         return _list_property_indexes(self)
 
+    def create_text_index(
+        self,
+        *,
+        name: str,
+        node_type: str,
+        properties: Iterable[str],
+        analyzer: str = "simple",
+    ) -> dict[str, Any]:
+        """Persist metadata for a generic node text lookup index."""
+
+        return _create_text_index(
+            self,
+            name=name,
+            node_type=node_type,
+            properties=tuple(properties),
+            analyzer=analyzer,
+        )
+
+    def list_text_indexes(self) -> list[dict[str, Any]]:
+        """Return persisted text-index metadata ordered by name."""
+
+        return _list_text_indexes(self)
+
+    def text_search(
+        self,
+        *,
+        index: str,
+        query: str,
+        top_k: int = 10,
+        return_properties: Iterable[str] | None = None,
+    ) -> Result:
+        """Search a generic node text index and return graph-addressable nodes."""
+
+        return _text_search(
+            self,
+            index=index,
+            query=query,
+            top_k=top_k,
+            return_properties=tuple(return_properties or ()),
+        )
+
     def capabilities(self) -> dict[str, Any]:
         """Return feature flags without running a query."""
 
@@ -1214,14 +1316,17 @@ class Database:
             "traversal.neighbors": True,
             "traversal.k_hop": True,
             "traversal.paths": True,
+            "traversal.multi_seed_paths": True,
             "traversal.shortest_path": True,
             "traversal.weighted_edges": True,
+            "semantic_neighbor_edges": True,
             "tuft.vector_search": True,
             "tuft.variable_length_paths": True,
             "explain": True,
             "profile": True,
             "batch_upsert": True,
             "property_index": True,
+            "text_index": True,
         }
 
     def explain(self, text: str) -> dict[str, Any]:
@@ -1771,6 +1876,7 @@ def _upsert_node_table_arrow(
     for class_name in sorted(rows_by_type):
         db.define_class(class_name)
         _replace_node_store_rows(db, class_name, rows_by_type[class_name])
+        _mark_node_indexes_stale(db, class_name)
     db._invalidate_graph_indexes()
     return {"inserted": inserted, "updated": updated, "skipped": skipped, "failed": 0}
 
@@ -1788,7 +1894,23 @@ def _upsert_edge_table_arrow(
 ) -> dict[str, int]:
     if table.num_rows == 0:
         raise CaracalError(code="CDB-7021", message="cannot upsert an empty edge table")
-    _require_table_columns(table, (edge_key_col, src_col, dst_col, type_col), "edge table")
+    _require_table_columns(table, (src_col, dst_col, type_col), "edge table")
+    if edge_key_col not in table.column_names:
+        table = table.append_column(
+            edge_key_col,
+            pa.array(
+                [
+                    _default_edge_upsert_key(
+                        row,
+                        src_col=src_col,
+                        dst_col=dst_col,
+                        type_col=type_col,
+                    )
+                    for row in table.to_pylist()
+                ],
+                type=pa.string(),
+            ),
+        )
     if "eid" in table.column_names:
         raise CaracalError(
             code="CDB-7021",
@@ -1848,7 +1970,24 @@ def _upsert_edge_table_arrow(
         db._define_property(relation)
         _replace_edge_store_rows(db, relation, rows_by_type[relation])
         db._invalidate_graph_indexes(relation)
+        _mark_edge_indexes_stale(db, relation)
     return {"inserted": inserted, "updated": updated, "skipped": skipped, "failed": 0}
+
+
+def _default_edge_upsert_key(
+    row: Mapping[str, Any],
+    *,
+    src_col: str,
+    dst_col: str,
+    type_col: str,
+) -> str:
+    qualifiers = [
+        str(row.get(name))
+        for name in ("index_name", "metric")
+        if name in row and row.get(name) is not None
+    ]
+    qualifier = "|" + "|".join(qualifiers) if qualifiers else ""
+    return f"{row[type_col]}:{row[src_col]}->{row[dst_col]}{qualifier}"
 
 
 def _strip_row_columns(row: Mapping[str, Any], names: set[str]) -> dict[str, Any]:
@@ -2048,6 +2187,8 @@ def _vector_search(
     if index not in metadata:
         raise CaracalError(code="CDB-7092", message=f"vector index not found: {index!r}")
     meta = metadata[index]
+    if meta.get("status") in {"stale", "building"}:
+        meta = _build_vector_index(db, dict(meta))
     import numpy as np
 
     query = np.asarray(list(query_vector), dtype=np.float32)
@@ -2300,6 +2441,7 @@ def _hnsw_config(meta: Mapping[str, Any], *, max_elements: int | None = None) ->
         ef_construction=int(options.get("ef_construction", 200)),
         metric=_hnsw_metric(str(meta["metric"])),  # type: ignore[arg-type]
         max_elements=int(max_elements or options.get("max_elements", count)),
+        random_seed=int(options.get("random_seed", 100)),
     )
 
 
@@ -2375,7 +2517,9 @@ def _create_property_index(
         "node_type": owner if kind == "node" else None,
         "edge_type": owner if kind == "edge" else None,
         "property": property_name,
-        "status": "ready",
+        "status": "building",
+        "index_file": _property_index_file(db, name),
+        "count": 0,
         "created_at": utc_now_iso(),
         "updated_at": utc_now_iso(),
     }
@@ -2390,15 +2534,94 @@ def _create_property_index(
                 code="CDB-7093",
                 message=f"property index already exists with a different definition: {name!r}",
             )
-        return dict(existing)
+        if existing.get("status") == "ready" and existing.get("index_file"):
+            path = db.bundle.child(str(existing["index_file"]))
+            if path.is_file():
+                return dict(existing)
+        return _build_property_index(db, dict(existing))
     metadata[name] = meta
     _write_property_index_manifest(db, metadata)
-    return dict(meta)
+    return _build_property_index(db, meta)
 
 
 def _list_property_indexes(db: Database) -> list[dict[str, Any]]:
     metadata = _load_property_index_manifest(db)
     return [dict(metadata[name]) for name in sorted(metadata)]
+
+
+def _build_property_index(db: Database, meta: dict[str, Any]) -> dict[str, Any]:
+    table = _property_index_source_table(db, meta)
+    id_column = _property_index_id_column(meta, table)
+    value_column = str(meta["property"])
+    lookup: dict[str, list[int]] = {}
+    for row in table.to_pylist():
+        key = _index_value_key(row.get(value_column))
+        lookup.setdefault(key, []).append(int(row[id_column]))
+    for ids in lookup.values():
+        ids.sort()
+    payload = {
+        "name": meta["name"],
+        "kind": meta["kind"],
+        "owner": meta.get("node_type") or meta.get("edge_type"),
+        "property": meta["property"],
+        "id_column": id_column,
+        "lookup": lookup,
+    }
+    index_file = meta.get("index_file") or _property_index_file(db, str(meta["name"]))
+    path = db.bundle.child(str(index_file))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+    meta = dict(meta)
+    meta["index_file"] = str(path.relative_to(db.bundle.path)).replace("\\", "/")
+    meta["status"] = "ready"
+    meta["count"] = table.num_rows
+    meta["updated_at"] = utc_now_iso()
+    metadata = _load_property_index_manifest(db)
+    metadata[str(meta["name"])] = meta
+    _write_property_index_manifest(db, metadata)
+    return dict(meta)
+
+
+def _property_index_source_table(db: Database, meta: Mapping[str, Any]) -> pa.Table:
+    if meta.get("kind") == "node":
+        return _node_table_for_local(db, str(meta["node_type"]))
+    return db.edge_table(str(meta["edge_type"]))
+
+
+def _property_index_id_column(meta: Mapping[str, Any], table: pa.Table) -> str:
+    if meta.get("kind") == "node":
+        return _vector_id_column(table)
+    return "eid"
+
+
+def _property_index_file(db: Database, name: str) -> str:
+    return str(Path("indexes") / _PROPERTY_INDEX_DIR / f"{name}.json").replace("\\", "/")
+
+
+def _property_index_lookup_ids(
+    db: Database,
+    meta: Mapping[str, Any],
+    value: Any,
+) -> list[int]:
+    ready = meta
+    if meta.get("status") != "ready" or not meta.get("index_file"):
+        ready = _build_property_index(db, dict(meta))
+    path = db.bundle.child(str(ready["index_file"]))
+    if not path.is_file():
+        ready = _build_property_index(db, dict(ready))
+        path = db.bundle.child(str(ready["index_file"]))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CaracalError(
+            code="CDB-7093",
+            message=f"corrupt property index data: {path}",
+        ) from exc
+    ids = payload.get("lookup", {}).get(_index_value_key(value), [])
+    return [int(item) for item in ids]
 
 
 def _load_property_index_manifest(db: Database) -> dict[str, dict[str, Any]]:
@@ -2428,6 +2651,468 @@ def _write_property_index_manifest(
     os.replace(tmp, path)
 
 
+def _create_text_index(
+    db: Database,
+    *,
+    name: str,
+    node_type: str,
+    properties: tuple[str, ...],
+    analyzer: str,
+) -> dict[str, Any]:
+    _assert_index_name(name, "text index")
+    analyzer = analyzer.lower()
+    if analyzer != "simple":
+        raise CaracalError(
+            code="CDB-7094",
+            message=f"unsupported text analyzer: {analyzer!r}",
+            hint="supported analyzers are 'simple'",
+        )
+    if not properties:
+        raise CaracalError(code="CDB-7094", message="text index requires at least one property")
+    cls = db._find_class(node_type)
+    node_local = cls.local_name or _local(cls.iri)
+    table = _node_table_for_local(db, node_local)
+    missing = [
+        property_name for property_name in properties if property_name not in table.column_names
+    ]
+    if missing:
+        raise CaracalError(
+            code="CDB-7094",
+            message=f"text index source column missing: {missing[0]!r}",
+        )
+    metadata = _load_text_index_manifest(db)
+    meta = {
+        "name": name,
+        "node_type": node_local,
+        "properties": list(properties),
+        "analyzer": analyzer,
+        "status": "building",
+        "index_file": _text_index_file(db, name),
+        "count": 0,
+        "created_at": utc_now_iso(),
+        "updated_at": utc_now_iso(),
+    }
+    if name in metadata:
+        existing = metadata[name]
+        comparable = {key: existing.get(key) for key in ("node_type", "properties", "analyzer")}
+        wanted = {key: meta.get(key) for key in ("node_type", "properties", "analyzer")}
+        if comparable != wanted:
+            raise CaracalError(
+                code="CDB-7094",
+                message=f"text index already exists with a different definition: {name!r}",
+            )
+        if existing.get("status") == "ready" and existing.get("index_file"):
+            path = db.bundle.child(str(existing["index_file"]))
+            if path.is_file():
+                return dict(existing)
+        return _build_text_index(db, dict(existing))
+    metadata[name] = meta
+    _write_text_index_manifest(db, metadata)
+    return _build_text_index(db, meta)
+
+
+def _list_text_indexes(db: Database) -> list[dict[str, Any]]:
+    metadata = _load_text_index_manifest(db)
+    return [dict(metadata[name]) for name in sorted(metadata)]
+
+
+def _build_text_index(db: Database, meta: dict[str, Any]) -> dict[str, Any]:
+    table = _node_table_for_local(db, str(meta["node_type"]))
+    id_column = _vector_id_column(table)
+    entries: list[dict[str, Any]] = []
+    exact: dict[str, list[int]] = {}
+    tokens: dict[str, list[int]] = {}
+    for row in table.to_pylist():
+        internal_id = int(row[id_column])
+        for property_name in meta["properties"]:
+            for text_value in _text_property_values(row.get(property_name)):
+                normalized = _normalize_text(text_value)
+                if not normalized:
+                    continue
+                token_values = _text_tokens(normalized)
+                entry = {
+                    "internal_id": internal_id,
+                    "property": property_name,
+                    "text": text_value,
+                    "normalized": normalized,
+                    "tokens": list(token_values),
+                }
+                entries.append(entry)
+                exact.setdefault(normalized, []).append(internal_id)
+                for token in token_values:
+                    tokens.setdefault(token, []).append(internal_id)
+    for bucket in (*exact.values(), *tokens.values()):
+        bucket[:] = sorted(set(bucket))
+    payload = {
+        "name": meta["name"],
+        "node_type": meta["node_type"],
+        "properties": meta["properties"],
+        "id_column": id_column,
+        "entries": entries,
+        "exact": exact,
+        "tokens": tokens,
+    }
+    path = db.bundle.child(str(meta.get("index_file") or _text_index_file(db, str(meta["name"]))))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+    meta = dict(meta)
+    meta["index_file"] = str(path.relative_to(db.bundle.path)).replace("\\", "/")
+    meta["status"] = "ready"
+    meta["count"] = table.num_rows
+    meta["updated_at"] = utc_now_iso()
+    metadata = _load_text_index_manifest(db)
+    metadata[str(meta["name"])] = meta
+    _write_text_index_manifest(db, metadata)
+    return dict(meta)
+
+
+def _load_text_index_data(db: Database, meta: Mapping[str, Any]) -> dict[str, Any]:
+    ready = meta
+    if meta.get("status") != "ready" or not meta.get("index_file"):
+        ready = _build_text_index(db, dict(meta))
+    path = db.bundle.child(str(ready["index_file"]))
+    if not path.is_file():
+        ready = _build_text_index(db, dict(ready))
+        path = db.bundle.child(str(ready["index_file"]))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CaracalError(
+            code="CDB-7094",
+            message=f"corrupt text index data: {path}",
+        ) from exc
+    return dict(payload)
+
+
+def _text_candidate_entries(
+    index_data: Mapping[str, Any],
+    normalized_query: str,
+) -> dict[int, list[dict[str, Any]]]:
+    query_tokens = _text_tokens(normalized_query)
+    exact_ids = {int(item) for item in index_data.get("exact", {}).get(normalized_query, [])}
+    token_ids: set[int] = set()
+    for token in query_tokens:
+        token_ids.update(int(item) for item in index_data.get("tokens", {}).get(token, []))
+    candidate_ids = exact_ids | token_ids
+    entries_by_id: dict[int, list[dict[str, Any]]] = {
+        internal_id: [] for internal_id in candidate_ids
+    }
+    for entry in index_data.get("entries", []):
+        internal_id = int(entry["internal_id"])
+        if internal_id in entries_by_id:
+            entries_by_id[internal_id].append(dict(entry))
+        elif str(entry.get("normalized", "")).startswith(normalized_query):
+            entries_by_id.setdefault(internal_id, []).append(dict(entry))
+    return entries_by_id
+
+
+def _text_index_file(db: Database, name: str) -> str:
+    return str(Path("indexes") / _TEXT_INDEX_DIR / f"{name}.json").replace("\\", "/")
+
+
+def _text_search(
+    db: Database,
+    *,
+    index: str,
+    query: str,
+    top_k: int,
+    return_properties: tuple[str, ...],
+) -> Result:
+    if top_k < 0:
+        raise CaracalError(code="CDB-6090", message="top_k must be >= 0")
+    metadata = _load_text_index_manifest(db)
+    if index not in metadata:
+        raise CaracalError(code="CDB-7094", message=f"text index not found: {index!r}")
+    meta = metadata[index]
+    table = _node_table_for_local(db, str(meta["node_type"]))
+    _validate_text_return_properties(table, return_properties)
+    index_data = _load_text_index_data(db, meta)
+    normalized_query = _normalize_text(query)
+    if top_k == 0 or not normalized_query:
+        return Result(_table_to_batches(_text_result_table(meta, table, [], return_properties)))
+
+    query_tokens = _text_tokens(normalized_query)
+    property_order = {
+        property_name: offset for offset, property_name in enumerate(meta["properties"])
+    }
+    row_lookup = {
+        int(row[index_data["id_column"]]): row
+        for row in table.to_pylist()
+        if index_data["id_column"] in row
+    }
+    rows: list[dict[str, Any]] = []
+    for internal_id, index_entries in _text_candidate_entries(index_data, normalized_query).items():
+        source_row = row_lookup.get(int(internal_id))
+        if source_row is None:
+            continue
+        best: dict[str, Any] | None = None
+        for entry in index_entries:
+            match = _score_text_match(
+                query=query,
+                normalized_query=normalized_query,
+                query_tokens=query_tokens,
+                text=str(entry["text"]),
+            )
+            if match is None:
+                continue
+            score, match_kind = match
+            candidate = _text_result_row(
+                meta,
+                source_row,
+                id_column=str(index_data["id_column"]),
+                score=score,
+                matched_property=str(entry["property"]),
+                matched_text=str(entry["text"]),
+                match_kind=match_kind,
+                return_properties=return_properties,
+            )
+            if best is None or _text_candidate_sort_key(
+                candidate, property_order
+            ) < _text_candidate_sort_key(best, property_order):
+                best = candidate
+        if best is not None:
+            rows.append(best)
+
+    rows.sort(
+        key=lambda row: (
+            -float(row["score"]),
+            int(row["internal_id"]),
+            str(row["matched_property"]),
+            str(row["matched_text"]),
+        )
+    )
+    rows = rows[:top_k]
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = rank
+    return Result(_table_to_batches(_text_result_table(meta, table, rows, return_properties)))
+
+
+def _validate_text_return_properties(table: pa.Table, return_properties: tuple[str, ...]) -> None:
+    missing = [name for name in return_properties if name not in table.column_names]
+    if missing:
+        raise CaracalError(
+            code="CDB-7094",
+            message=f"text search return property missing: {missing[0]!r}",
+        )
+
+
+def _text_result_row(
+    meta: Mapping[str, Any],
+    row: Mapping[str, Any],
+    *,
+    id_column: str,
+    score: float,
+    matched_property: str,
+    matched_text: str,
+    match_kind: str,
+    return_properties: tuple[str, ...],
+) -> dict[str, Any]:
+    internal_id = int(row.get(id_column, row.get("nid", 0)))
+    return {
+        "node_id": row.get("node_id", internal_id),
+        "node_type": meta["node_type"],
+        "internal_id": internal_id,
+        "score": float(score),
+        "rank": 0,
+        "matched_property": matched_property,
+        "matched_text": matched_text,
+        "match_kind": match_kind,
+        "selected_properties": {name: row.get(name) for name in return_properties},
+    }
+
+
+def _text_result_table(
+    meta: Mapping[str, Any],
+    source: pa.Table,
+    rows: list[dict[str, Any]],
+    return_properties: tuple[str, ...],
+) -> pa.Table:
+    node_id_type = (
+        source.schema.field("node_id").type if "node_id" in source.column_names else pa.uint64()
+    )
+    selected_type = pa.struct(
+        [
+            pa.field(
+                name,
+                source.schema.field(name).type if name in source.column_names else pa.null(),
+            )
+            for name in return_properties
+        ]
+    )
+    schema = pa.schema(
+        [
+            pa.field("node_id", node_id_type),
+            pa.field("node_type", pa.string()),
+            pa.field("internal_id", pa.uint64()),
+            pa.field("score", pa.float32()),
+            pa.field("rank", pa.uint64()),
+            pa.field("matched_property", pa.string()),
+            pa.field("matched_text", pa.string()),
+            pa.field("match_kind", pa.string()),
+            pa.field("selected_properties", selected_type),
+        ]
+    )
+    if not rows:
+        return pa.Table.from_batches([], schema=schema)
+    return pa.table(
+        [
+            pa.array([row["node_id"] for row in rows], type=node_id_type),
+            pa.array([row["node_type"] for row in rows], type=pa.string()),
+            pa.array([row["internal_id"] for row in rows], type=pa.uint64()),
+            pa.array([row["score"] for row in rows], type=pa.float32()),
+            pa.array([row["rank"] for row in rows], type=pa.uint64()),
+            pa.array([row["matched_property"] for row in rows], type=pa.string()),
+            pa.array([row["matched_text"] for row in rows], type=pa.string()),
+            pa.array([row["match_kind"] for row in rows], type=pa.string()),
+            pa.array([row["selected_properties"] for row in rows], type=selected_type),
+        ],
+        schema=schema,
+    )
+
+
+def _score_text_match(
+    *,
+    query: str,
+    normalized_query: str,
+    query_tokens: tuple[str, ...],
+    text: str,
+) -> tuple[float, str] | None:
+    stripped_text = text.strip()
+    normalized_text = _normalize_text(stripped_text)
+    if not normalized_text:
+        return None
+    if stripped_text == query.strip():
+        return 4.0, "exact"
+    if normalized_text == normalized_query:
+        return 3.5, "normalized"
+    if normalized_text.startswith(normalized_query):
+        return 3.0, "prefix"
+    text_tokens = set(_text_tokens(normalized_text))
+    if not query_tokens or not text_tokens:
+        return None
+    query_set = set(query_tokens)
+    overlap = query_set & text_tokens
+    if not overlap:
+        return None
+    if query_set <= text_tokens:
+        return 2.0 + (len(overlap) / len(query_set)) * 0.5, "token_all"
+    return 1.0 + (len(overlap) / len(query_set)) * 0.5, "token_partial"
+
+
+def _text_candidate_sort_key(
+    row: Mapping[str, Any],
+    property_order: Mapping[str, int],
+) -> tuple[Any, ...]:
+    return (
+        -float(row["score"]),
+        property_order.get(str(row["matched_property"]), 10_000),
+        str(row["matched_text"]),
+    )
+
+
+def _text_property_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list | tuple):
+        values: list[str] = []
+        for item in value:
+            values.extend(_text_property_values(item))
+        return values
+    return [str(value)]
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w]+", " ", value.casefold())).strip()
+
+
+def _text_tokens(normalized_text: str) -> tuple[str, ...]:
+    return tuple(token for token in normalized_text.split(" ") if token)
+
+
+def _load_text_index_manifest(db: Database) -> dict[str, dict[str, Any]]:
+    path = db.bundle.child("indexes", _TEXT_INDEX_MANIFEST)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CaracalError(
+            code="CDB-7094",
+            message=f"corrupt text index metadata: {path}",
+        ) from exc
+    return {str(item["name"]): dict(item) for item in payload.get("indexes", [])}
+
+
+def _write_text_index_manifest(
+    db: Database,
+    metadata: Mapping[str, Mapping[str, Any]],
+) -> None:
+    root = db.bundle.child("indexes")
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / _TEXT_INDEX_MANIFEST
+    payload = {"indexes": [dict(metadata[name]) for name in sorted(metadata)]}
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _mark_node_indexes_stale(db: Database, node_type: str) -> None:
+    local_name = _coerce_local_name(node_type, "node type")
+    vector_metadata = _load_vector_index_manifest(db)
+    changed = False
+    for meta in vector_metadata.values():
+        if meta.get("node_type") == local_name and meta.get("status") == "ready":
+            meta["status"] = "stale"
+            meta["updated_at"] = utc_now_iso()
+            changed = True
+    if changed:
+        _write_vector_index_manifest(db, vector_metadata)
+
+    property_metadata = _load_property_index_manifest(db)
+    changed = False
+    for meta in property_metadata.values():
+        if (
+            meta.get("kind") == "node"
+            and meta.get("node_type") == local_name
+            and meta.get("status") == "ready"
+        ):
+            meta["status"] = "stale"
+            meta["updated_at"] = utc_now_iso()
+            changed = True
+    if changed:
+        _write_property_index_manifest(db, property_metadata)
+
+    text_metadata = _load_text_index_manifest(db)
+    changed = False
+    for meta in text_metadata.values():
+        if meta.get("node_type") == local_name and meta.get("status") == "ready":
+            meta["status"] = "stale"
+            meta["updated_at"] = utc_now_iso()
+            changed = True
+    if changed:
+        _write_text_index_manifest(db, text_metadata)
+
+
+def _mark_edge_indexes_stale(db: Database, edge_type: str) -> None:
+    local_name = _coerce_local_name(edge_type, "edge type")
+    metadata = _load_property_index_manifest(db)
+    changed = False
+    for meta in metadata.values():
+        if (
+            meta.get("kind") == "edge"
+            and meta.get("edge_type") == local_name
+            and meta.get("status") == "ready"
+        ):
+            meta["status"] = "stale"
+            meta["updated_at"] = utc_now_iso()
+            changed = True
+    if changed:
+        _write_property_index_manifest(db, metadata)
+
+
 def _assert_index_name(name: str, label: str) -> None:
     if not _INDEX_NAME_RE.match(name):
         raise CaracalError(
@@ -2435,6 +3120,10 @@ def _assert_index_name(name: str, label: str) -> None:
             message=f"invalid {label} name: {name!r}",
             hint="index names must match [A-Za-z_][A-Za-z0-9_.-]*",
         )
+
+
+def _index_value_key(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
 
 
 def _neighbors(
@@ -2622,6 +3311,78 @@ def _paths(
     return Result(_table_to_batches(_paths_result_table(rows)))
 
 
+def _multi_seed_paths(
+    db: Database,
+    *,
+    sources: tuple[Any, ...],
+    target_node_types: tuple[str, ...],
+    edge_types: tuple[str, ...],
+    max_depth: int,
+    limit: int,
+    direction: str,
+    edge_filters: Mapping[str, Any],
+    node_key_col: str,
+    score: str | None,
+    score_property: str,
+    order: str,
+    return_properties: tuple[str, ...],
+    max_paths_per_seed: int | None,
+) -> Result:
+    if max_depth < 1:
+        raise CaracalError(code="CDB-6031", message="paths max_depth must be >= 1")
+    if limit < 0:
+        raise CaracalError(code="CDB-6020", message="paths limit must be >= 0")
+    if max_paths_per_seed is not None and max_paths_per_seed < 0:
+        raise CaracalError(code="CDB-6020", message="max_paths_per_seed must be >= 0")
+    if direction not in {"out", "in", "both"}:
+        raise CaracalError(
+            code="CDB-6020",
+            message=f"direction must be 'out', 'in', or 'both', got {direction!r}",
+        )
+    if not sources:
+        raise CaracalError(code="CDB-6020", message="multi-seed paths require at least one source")
+    if not target_node_types:
+        raise CaracalError(
+            code="CDB-6020",
+            message="multi-seed paths require at least one target node type",
+        )
+    score_mode = _normalize_path_score_mode(score)
+    score_order = _normalize_score_order(order)
+    source_ids, _ = _resolve_graph_node_ids(db, sources, node_key_col=node_key_col)
+    target_types = _resolve_target_node_types(db, target_node_types)
+    _validate_multi_seed_return_properties(db, target_types, return_properties)
+    adjacency = _typed_adjacency(
+        db,
+        edge_types=edge_types,
+        direction=direction,
+        filters=edge_filters,
+    )
+    node_lookup = _node_lookup(db, node_key_col=node_key_col)
+    sort_key = _multi_seed_path_sort_key(score_order if score_mode is not None else None)
+    rows: list[dict[str, Any]] = []
+    for source_id in source_ids:
+        seed_rows = _enumerate_multi_seed_path_rows(
+            source_id=int(source_id),
+            target_types=target_types,
+            adjacency=adjacency,
+            node_lookup=node_lookup,
+            max_depth=max_depth,
+            score_mode=score_mode,
+            score_property=score_property,
+            return_properties=return_properties,
+        )
+        seed_rows.sort(key=sort_key)
+        if max_paths_per_seed is not None:
+            seed_rows = seed_rows[:max_paths_per_seed]
+        rows.extend(seed_rows)
+    rows.sort(key=sort_key)
+    rows = rows[:limit]
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = rank
+    selected_type = _selected_properties_type_for_node_types(db, target_types, return_properties)
+    return Result(_table_to_batches(_multi_seed_paths_result_table(rows, selected_type)))
+
+
 def _shortest_path(
     db: Database,
     *,
@@ -2701,6 +3462,48 @@ def _enumerate_path_rows(
     return rows
 
 
+def _enumerate_multi_seed_path_rows(
+    *,
+    source_id: int,
+    target_types: set[str],
+    adjacency: Mapping[int, list[dict[str, Any]]],
+    node_lookup: Mapping[int, Mapping[str, Any]],
+    max_depth: int,
+    score_mode: str | None,
+    score_property: str,
+    return_properties: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    queue: list[tuple[int, list[int], list[dict[str, Any]]]] = [(source_id, [source_id], [])]
+    while queue:
+        current, path_nodes, path_edges = queue.pop(0)
+        if len(path_edges) >= max_depth:
+            continue
+        for step in adjacency.get(current, []):
+            next_id = int(step["next"])
+            if next_id in path_nodes:
+                continue
+            next_nodes = [*path_nodes, next_id]
+            next_edges = [*path_edges, step]
+            target_info = node_lookup.get(next_id, _fallback_node_info(next_id))
+            if target_info["node_type"] in target_types:
+                rows.append(
+                    _multi_seed_path_result_row(
+                        source_id=source_id,
+                        target_id=next_id,
+                        path_nodes=next_nodes,
+                        path_edges=next_edges,
+                        node_lookup=node_lookup,
+                        score_mode=score_mode,
+                        score_property=score_property,
+                        return_properties=return_properties,
+                    )
+                )
+            if len(next_edges) < max_depth:
+                queue.append((next_id, next_nodes, next_edges))
+    return rows
+
+
 def _path_result_row(
     path_nodes: list[int],
     path_edges: list[Mapping[str, Any]],
@@ -2726,6 +3529,47 @@ def _path_result_row(
             for edge in path_edges
         ],
         "path_score": _path_score(path_edges, mode=score_mode, property_name=score_property),
+    }
+
+
+def _multi_seed_path_result_row(
+    *,
+    source_id: int,
+    target_id: int,
+    path_nodes: list[int],
+    path_edges: list[Mapping[str, Any]],
+    node_lookup: Mapping[int, Mapping[str, Any]],
+    score_mode: str | None,
+    score_property: str,
+    return_properties: tuple[str, ...],
+) -> dict[str, Any]:
+    source_info = node_lookup.get(source_id, _fallback_node_info(source_id))
+    target_info = node_lookup.get(target_id, _fallback_node_info(target_id))
+    target_row = target_info.get("row", {})
+    selected = {
+        property_name: target_row.get(property_name) if isinstance(target_row, Mapping) else None
+        for property_name in return_properties
+    }
+    path_score = _path_score(path_edges, mode=score_mode, property_name=score_property)
+    path_node_ids = [
+        str(node_lookup.get(node, _fallback_node_info(node))["node_id"]) for node in path_nodes
+    ]
+    return {
+        "source_node_id": str(source_info["node_id"]),
+        "source_node_type": source_info["node_type"],
+        "source_internal_id": source_id,
+        "target_node_id": str(target_info["node_id"]),
+        "target_node_type": target_info["node_type"],
+        "target_internal_id": target_id,
+        "depth": len(path_edges),
+        "path_node_ids": path_node_ids,
+        "internal_node_ids": path_nodes,
+        "path_edge_ids": [int(edge["edge_id"]) for edge in path_edges],
+        "path_edge_types": [str(edge["edge_type"]) for edge in path_edges],
+        "path_score": path_score,
+        "score": path_score,
+        "rank": 0,
+        "selected_properties": selected,
     }
 
 
@@ -2758,6 +3602,47 @@ def _paths_result_table(rows: list[dict[str, Any]]) -> pa.Table:
             pa.array([row["directions"] for row in rows], type=pa.list_(pa.string())),
             pa.array([row["edge_properties"] for row in rows], type=pa.list_(pa.string())),
             pa.array([row["path_score"] for row in rows], type=pa.float64()),
+        ],
+        schema=schema,
+    )
+
+
+def _multi_seed_paths_result_table(
+    rows: list[dict[str, Any]],
+    selected_type: pa.StructType,
+) -> pa.Table:
+    schema = pa.schema(
+        [
+            pa.field("source_node_id", pa.string()),
+            pa.field("source_node_type", pa.string()),
+            pa.field("target_node_id", pa.string()),
+            pa.field("target_node_type", pa.string()),
+            pa.field("depth", pa.uint64()),
+            pa.field("path_node_ids", pa.list_(pa.string())),
+            pa.field("path_edge_ids", pa.list_(pa.uint64())),
+            pa.field("path_edge_types", pa.list_(pa.string())),
+            pa.field("path_score", pa.float64()),
+            pa.field("score", pa.float64()),
+            pa.field("rank", pa.uint64()),
+            pa.field("selected_properties", selected_type),
+        ]
+    )
+    if not rows:
+        return pa.Table.from_batches([], schema=schema)
+    return pa.table(
+        [
+            pa.array([row["source_node_id"] for row in rows], type=pa.string()),
+            pa.array([row["source_node_type"] for row in rows], type=pa.string()),
+            pa.array([row["target_node_id"] for row in rows], type=pa.string()),
+            pa.array([row["target_node_type"] for row in rows], type=pa.string()),
+            pa.array([row["depth"] for row in rows], type=pa.uint64()),
+            pa.array([row["path_node_ids"] for row in rows], type=pa.list_(pa.string())),
+            pa.array([row["path_edge_ids"] for row in rows], type=pa.list_(pa.uint64())),
+            pa.array([row["path_edge_types"] for row in rows], type=pa.list_(pa.string())),
+            pa.array([row["path_score"] for row in rows], type=pa.float64()),
+            pa.array([row["score"] for row in rows], type=pa.float64()),
+            pa.array([row["rank"] for row in rows], type=pa.uint64()),
+            pa.array([row["selected_properties"] for row in rows], type=selected_type),
         ],
         schema=schema,
     )
@@ -2836,6 +3721,80 @@ def _path_score_sort_key(order: str):
         return (ordered_score, int(row["depth"]), int(row["internal_id"]))
 
     return _key
+
+
+def _multi_seed_path_sort_key(order: str | None):
+    def _key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+        score = row.get("path_score")
+        score_value = float(score) if score is not None else 0.0
+        if order is None:
+            return (
+                int(row["depth"]),
+                int(row["source_internal_id"]),
+                int(row["target_internal_id"]),
+                tuple(row["internal_node_ids"]),
+                tuple(row["path_edge_ids"]),
+            )
+        ordered_score = score_value if order == "asc" else -score_value
+        return (
+            ordered_score,
+            int(row["depth"]),
+            int(row["source_internal_id"]),
+            int(row["target_internal_id"]),
+            tuple(row["internal_node_ids"]),
+            tuple(row["path_edge_ids"]),
+        )
+
+    return _key
+
+
+def _resolve_target_node_types(db: Database, target_node_types: tuple[str, ...]) -> set[str]:
+    resolved: set[str] = set()
+    for node_type in target_node_types:
+        cls = db._find_class(node_type)
+        resolved.add(cls.local_name or _local(cls.iri))
+    return resolved
+
+
+def _validate_multi_seed_return_properties(
+    db: Database,
+    target_types: set[str],
+    return_properties: tuple[str, ...],
+) -> None:
+    missing: list[str] = []
+    for property_name in return_properties:
+        if not any(
+            property_name in _node_table_for_local(db, node_type).column_names
+            for node_type in target_types
+        ):
+            missing.append(property_name)
+    if missing:
+        raise CaracalError(
+            code="CDB-7093",
+            message=f"path return property missing on target node types: {missing[0]!r}",
+        )
+
+
+def _selected_properties_type_for_node_types(
+    db: Database,
+    target_types: set[str],
+    return_properties: tuple[str, ...],
+) -> pa.StructType:
+    fields: list[pa.Field] = []
+    tables = {node_type: _node_table_for_local(db, node_type) for node_type in sorted(target_types)}
+    for property_name in return_properties:
+        field_type: pa.DataType = pa.null()
+        for table in tables.values():
+            if property_name not in table.column_names:
+                continue
+            candidate = table.schema.field(property_name).type
+            if pa.types.is_null(field_type):
+                field_type = candidate
+            elif candidate != field_type:
+                field_type = pa.string()
+                break
+        fields.append(pa.field(property_name, field_type))
+    return pa.struct(fields)
 
 
 def _typed_adjacency(
@@ -3130,7 +4089,7 @@ def _table_to_batches(table: pa.Table) -> list[pa.RecordBatch]:
 def _compile_sql_operator(
     db: Database,
     text: str,
-) -> tuple[Any, SnapshotId | None, int | None, str]:
+) -> tuple[Any, SnapshotId | None, int | None, str, tuple[str, ...]]:
     program = parse_tuft(text)
     try:
         bind_program(program, db.catalog)
@@ -3143,9 +4102,9 @@ def _compile_sql_operator(
     assert query is not None
     if _is_multi_element_pattern(query):
         plan = _compile_pattern_query(query, db)
-        return _build_pattern_pipeline(plan, db), plan.snapshot, plan.limit, "pattern_match"
+        return _build_pattern_pipeline(plan, db), plan.snapshot, plan.limit, "pattern_match", ()
     plan = _compile_query(query, db)
-    return _build_pipeline(plan, db), plan.snapshot, plan.limit, "node_match"
+    return _build_pipeline(plan, db), plan.snapshot, plan.limit, "node_match", plan.indexes_used
 
 
 def _profile_query(db: Database, text: str) -> dict[str, Any]:
@@ -3180,7 +4139,7 @@ def _profile_query(db: Database, text: str) -> dict[str, Any]:
             "fallback_flags": [],
         }
     start = time.perf_counter()
-    op, snapshot, limit, logical = _compile_sql_operator(db, text)
+    op, snapshot, limit, logical, indexes_used = _compile_sql_operator(db, text)
     ctx = apply_as_of(ExecCtx(), snapshot)
     iterator, report = profile_pipeline(op, ctx)
     batches = list(iterator)
@@ -3191,7 +4150,7 @@ def _profile_query(db: Database, text: str) -> dict[str, Any]:
     return {
         "logical_plan": logical,
         "physical_plan": op.name,
-        "indexes_used": [],
+        "indexes_used": list(indexes_used),
         "vector_index_used": None,
         "node_rows_scanned": _profile_rows(report, "NodeScan"),
         "edge_rows_scanned": _profile_rows(report, "Expand"),
@@ -3230,11 +4189,11 @@ def _explain_query(db: Database, text: str) -> dict[str, Any]:
             ),
             "fallback_flags": [],
         }
-    op, _snapshot, limit, logical = _compile_sql_operator(db, text)
+    op, _snapshot, limit, logical, indexes_used = _compile_sql_operator(db, text)
     return {
         "logical_plan": logical,
         "physical_plan": op.name,
-        "indexes_used": [],
+        "indexes_used": list(indexes_used),
         "vector_index_used": None,
         "limit": limit,
         "fallback_flags": [],
@@ -3259,6 +4218,13 @@ def _single_query_statement(program: ta.Program, label: str) -> ta.Query:
 
 
 @dataclass(slots=True)
+class _IndexLookup:
+    name: str
+    property_name: str
+    value: Any
+
+
+@dataclass(slots=True)
 class _CompiledQuery:
     class_iri: str
     local_name: str
@@ -3269,6 +4235,8 @@ class _CompiledQuery:
     limit: int | None
     closure_base_iri: str | None = None
     snapshot: SnapshotId | None = None
+    indexes_used: tuple[str, ...] = ()
+    index_lookup: _IndexLookup | None = None
 
 
 def _compile_query(query: ta.Query, db: Database) -> _CompiledQuery:
@@ -3322,10 +4290,13 @@ def _compile_query(query: ta.Query, db: Database) -> _CompiledQuery:
         limit = _eval_int_literal(query.modifiers.limit, "LIMIT")
 
     snapshot = resolve_as_of(db.bundle, match_clause.as_of)
+    local_name = cls.local_name or _local(cls.iri)
+    index_lookup = _indexed_lookup_for_predicate(db, local_name, predicate)
+    indexes_used = (index_lookup.name,) if index_lookup is not None else ()
 
     return _CompiledQuery(
         class_iri=cls.iri,
-        local_name=cls.local_name or _local(cls.iri),
+        local_name=local_name,
         alias=alias,
         columns=columns,
         predicate=predicate,
@@ -3333,6 +4304,8 @@ def _compile_query(query: ta.Query, db: Database) -> _CompiledQuery:
         limit=limit,
         closure_base_iri=closure_base_iri,
         snapshot=snapshot,
+        indexes_used=indexes_used,
+        index_lookup=index_lookup,
     )
 
 
@@ -3344,6 +4317,52 @@ def _resolve_class(catalog: Catalog, iri_or_local: str) -> ClassDef:
         if (candidate.local_name or _local(candidate.iri)) == iri_or_local:
             return candidate
     raise CaracalError(code="CDB-6021", message=f"class not found in catalog: {iri_or_local!r}")
+
+
+def _indexed_lookup_for_predicate(
+    db: Database,
+    node_type: str,
+    predicate: object | None,
+) -> _IndexLookup | None:
+    equality = _first_equality_predicate(predicate)
+    if equality is None:
+        return None
+    property_name, value = equality
+    for meta in _load_property_index_manifest(db).values():
+        if (
+            meta.get("kind") == "node"
+            and meta.get("node_type") == node_type
+            and meta.get("property") == property_name
+        ):
+            return _IndexLookup(
+                name=str(meta["name"]),
+                property_name=property_name,
+                value=value,
+            )
+    return None
+
+
+def _first_equality_predicate(predicate: object | None) -> tuple[str, Any] | None:
+    if not isinstance(predicate, tuple) or len(predicate) < 3:
+        return None
+    op = predicate[0]
+    if op == "eq":
+        left, right = predicate[1], predicate[2]
+        if _is_col_expr(left) and _is_lit_expr(right):
+            return str(left[1]), right[1]
+        if _is_lit_expr(left) and _is_col_expr(right):
+            return str(right[1]), left[1]
+    if op == "and":
+        return _first_equality_predicate(predicate[1]) or _first_equality_predicate(predicate[2])
+    return None
+
+
+def _is_col_expr(expr: object) -> bool:
+    return isinstance(expr, tuple) and len(expr) == 2 and expr[0] == "col"
+
+
+def _is_lit_expr(expr: object) -> bool:
+    return isinstance(expr, tuple) and len(expr) == 2 and expr[0] == "lit"
 
 
 def _expand(name: ta.NameRef, query: ta.Query) -> str:
@@ -4729,7 +5748,18 @@ def _build_pipeline(plan: _CompiledQuery, db: Database) -> Any:
     else:
         store = open_node_store(db.bundle, class_iri=plan.class_iri, local_name=plan.local_name)
         column_request = list(plan.columns)
-        op = NodeScanOperator(store, columns=column_request)
+        if plan.index_lookup is not None:
+            metadata = _load_property_index_manifest(db)
+            index_meta = metadata[plan.index_lookup.name]
+            ids = _property_index_lookup_ids(db, index_meta, plan.index_lookup.value)
+            op = _IndexedNodeLookupOperator(
+                store,
+                ids=ids,
+                id_column=_property_index_id_column(index_meta, store.to_table()),
+                columns=column_request,
+            )
+        else:
+            op = NodeScanOperator(store, columns=column_request)
 
     if plan.predicate is not None:
         op = FilterOperator(op, compile_expr(plan.predicate))
@@ -4743,6 +5773,47 @@ class _EmptyOperator(PhysicalOperator):
 
     def _next_batch(self) -> pa.RecordBatch | None:
         return None
+
+
+class _IndexedNodeLookupOperator(PhysicalOperator):
+    name = "IndexedNodeLookup"
+
+    def __init__(
+        self,
+        store: NodeStore,
+        *,
+        ids: Iterable[int],
+        id_column: str,
+        columns: list[str] | None,
+    ) -> None:
+        super().__init__()
+        self._store = store
+        self._ids = sorted({int(item) for item in ids})
+        self._id_column = id_column
+        self._columns = list(columns) if columns is not None else None
+        self._done = False
+
+    def _next_batch(self) -> pa.RecordBatch | None:
+        if self._done:
+            return None
+        self._done = True
+        requested = set(self._columns or ())
+        requested.add(self._id_column)
+        table = self._store.to_table(columns=sorted(requested))
+        if not self._ids or self._id_column not in table.column_names:
+            table = table.slice(0, 0)
+        else:
+            mask = pa.compute.is_in(
+                table[self._id_column],
+                value_set=pa.array(self._ids, type=table.schema.field(self._id_column).type),
+            )
+            table = table.filter(mask)
+            rows = table.to_pylist()
+            rows.sort(key=lambda row: self._ids.index(int(row[self._id_column])))
+            table = pa.Table.from_pylist(rows, schema=table.schema) if rows else table.slice(0, 0)
+        if self._columns is not None:
+            table = table.select(self._columns)
+        return _table_to_batches(table)[0]
 
 
 def _apply_limit(batches: list[pa.RecordBatch], limit: int) -> list[pa.RecordBatch]:

@@ -317,10 +317,41 @@ def test_batch_upsert_nodes_edges_property_index_and_capabilities(tmp_path: Path
         prop_idx = db.create_property_index(
             name="entity_name_idx", node_type="Entity", property="name"
         )
+        indexed_profile = db.profile(
+            "MATCH (e:Entity) WHERE e.name = 'A2' RETURN e.node_id, e.name LIMIT 1"
+        )
+        indexed_explain = db.explain(
+            "MATCH (e:Entity) WHERE e.name = 'A2' RETURN e.node_id, e.name LIMIT 1"
+        )
+        semantic_first = db.upsert_edge_table_arrow(
+            pa.table(
+                {
+                    "src": ["a"],
+                    "dst": ["c"],
+                    "type": ["SEMANTIC_NEIGHBOR"],
+                    "score": [0.88],
+                    "metric": ["cosine"],
+                    "index_name": ["entity_name_text_idx"],
+                }
+            )
+        )
+        semantic_second = db.upsert_edge_table_arrow(
+            pa.table(
+                {
+                    "src": ["a"],
+                    "dst": ["c"],
+                    "type": ["SEMANTIC_NEIGHBOR"],
+                    "score": [0.91],
+                    "metric": ["cosine"],
+                    "index_name": ["entity_name_text_idx"],
+                }
+            )
+        )
         caps = db.capabilities()
         profile = db.profile("MATCH (e:Entity) RETURN e.name LIMIT 2")
         nodes = db.node_table("Entity").to_pylist()
         edges = db.edge_table("RELATED_TO").to_pylist()
+        semantic_edges = db.edge_table("SEMANTIC_NEIGHBOR").to_pylist()
 
     assert first == {"inserted": 2, "updated": 0, "skipped": 0, "failed": 0}
     assert second == {"inserted": 1, "updated": 1, "skipped": 0, "failed": 0}
@@ -330,12 +361,134 @@ def test_batch_upsert_nodes_edges_property_index_and_capabilities(tmp_path: Path
     assert [row["edge_id"] for row in edges] == ["e1", "e2"]
     assert edges[0]["weight"] == 0.9
     assert prop_idx["status"] == "ready"
+    assert indexed_profile["indexes_used"] == ["entity_name_idx"]
+    assert indexed_explain["indexes_used"] == ["entity_name_idx"]
+    assert semantic_first == {"inserted": 1, "updated": 0, "skipped": 0, "failed": 0}
+    assert semantic_second == {"inserted": 0, "updated": 1, "skipped": 0, "failed": 0}
+    assert len(semantic_edges) == 1
+    assert semantic_edges[0]["score"] == 0.91
     assert caps["vector_search"] is True
     assert caps["traversal.k_hop"] is True
     assert caps["traversal.shortest_path"] is True
     assert caps["tuft.vector_search"] is True
     assert profile["result_count"] == 2
     assert "operator_timings" in profile
+
+
+def test_entity_text_index_search_and_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "text"
+    with cdb.connect(path, format="bundle") as db:
+        db.insert_node_table_arrow(
+            pa.table(
+                {
+                    "node_id": ["e1", "e2", "e3"],
+                    "type": ["Entity", "Entity", "Entity"],
+                    "name": ["Sam Bankman-Fried", "Sam Altman", "Bankman"],
+                    "canonical_name": ["sam bankman fried", "sam altman", "bankman"],
+                    "aliases": [["SBF"], ["OpenAI Sam"], ["Bankman-Fried"]],
+                    "entity_type": ["person", "person", "family_name"],
+                }
+            )
+        )
+        meta = db.create_text_index(
+            name="entity_name_text_idx",
+            node_type="Entity",
+            properties=["name", "canonical_name", "aliases"],
+        )
+        rows = db.text_search(
+            index="entity_name_text_idx",
+            query="Sam Bankman Fried",
+            top_k=3,
+            return_properties=["name", "canonical_name", "entity_type"],
+        ).rows()
+        alias_rows = db.text_search(
+            index="entity_name_text_idx",
+            query="SBF",
+            top_k=1,
+            return_properties=["name"],
+        ).rows()
+        db.upsert_node_table_arrow(
+            pa.table(
+                {
+                    "node_id": ["e4"],
+                    "type": ["Entity"],
+                    "name": ["Caracal Database"],
+                    "canonical_name": ["caracal database"],
+                    "aliases": [["CaracalDB"]],
+                    "entity_type": ["product"],
+                }
+            )
+        )
+        stale_rebuilt_rows = db.text_search(
+            index="entity_name_text_idx",
+            query="CaracalDB",
+            top_k=1,
+            return_properties=["entity_type"],
+        ).rows()
+        caps = db.capabilities()
+
+    assert meta["status"] == "ready"
+    assert rows[0]["node_id"] == "e1"
+    assert rows[0]["match_kind"] == "normalized"
+    assert rows[0]["selected_properties"]["entity_type"] == "person"
+    assert alias_rows[0]["node_id"] == "e1"
+    assert alias_rows[0]["matched_property"] == "aliases"
+    assert stale_rebuilt_rows[0]["node_id"] == "e4"
+    assert stale_rebuilt_rows[0]["selected_properties"] == {"entity_type": "product"}
+    assert caps["text_index"] is True
+
+    with cdb.connect(path, format="bundle") as db:
+        assert db.list_text_indexes()[0]["name"] == "entity_name_text_idx"
+        reopened = db.text_search(
+            index="entity_name_text_idx",
+            query="Bankman-Fried",
+            top_k=1,
+            return_properties=["canonical_name"],
+        ).rows()
+
+    assert reopened[0]["node_id"] == "e3"
+
+
+def test_multi_seed_paths_return_ranked_context_candidates(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "multi-seed-paths", format="bundle") as db:
+        db.insert_node_table(
+            [
+                {"node_id": "c1", "type": "Chunk", "document_id": "d1", "text": "Question seed"},
+                {"node_id": "e1", "type": "Entity", "name": "Entity 1"},
+                {"node_id": "e2", "type": "Entity", "name": "Entity 2"},
+                {"node_id": "c2", "type": "Chunk", "document_id": "d2", "text": "Best evidence"},
+                {"node_id": "c3", "type": "Chunk", "document_id": "d3", "text": "Weak evidence"},
+            ]
+        )
+        db.insert_edge_table(
+            [
+                {"src": "c1", "dst": "e1", "type": "MENTIONS", "weight": 0.9},
+                {"src": "e1", "dst": "e2", "type": "RELATED_TO", "weight": 0.8},
+                {"src": "e2", "dst": "c2", "type": "EVIDENCED_BY", "weight": 0.7},
+                {"src": "e1", "dst": "c3", "type": "EVIDENCED_BY", "weight": 0.2},
+            ]
+        )
+
+        rows = db.paths(
+            sources=["c1", "e1"],
+            target_node_types=["Chunk"],
+            edge_types=["MENTIONS", "RELATED_TO", "EVIDENCED_BY"],
+            direction="out",
+            max_depth=3,
+            limit=2,
+            max_paths_per_seed=1,
+            path_score="product",
+            path_score_property="weight",
+            return_properties=["document_id", "text"],
+        ).rows()
+
+    assert [row["source_node_id"] for row in rows] == ["e1", "c1"]
+    assert [row["target_node_id"] for row in rows] == ["c2", "c2"]
+    assert rows[0]["target_node_type"] == "Chunk"
+    assert rows[0]["rank"] == 1
+    assert rows[0]["path_edge_types"] == ["RELATED_TO", "EVIDENCED_BY"]
+    assert rows[0]["path_score"] == pytest.approx(0.56)
+    assert rows[0]["selected_properties"] == {"document_id": "d2", "text": "Best evidence"}
 
 
 def test_public_vector_distance_helpers() -> None:

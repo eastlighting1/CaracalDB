@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.8] - 2026-05-08
+
+### Added
+
+- Added generic node text lookup APIs: `create_text_index`,
+  `list_text_indexes`, and `text_search`, with persisted text-index data,
+  stale rebuild handling, and graph-addressable result rows.
+- Extended `paths` with a multi-seed evidence expansion mode using
+  `sources`, `target_node_types`, weighted `path_score`, per-seed caps, and
+  selected target properties for GraphRAG adapter candidates.
+- Added real property-index lookup data and wired indexed equality predicates
+  into Tuft profile/explain `indexes_used`.
+- Added deterministic HNSW rebuild seeding and idempotent semantic-neighbor
+  edge upsert keys when callers omit `edge_id`.
+- Added the `graph_ecosystem` benchmark scenario, reporting native semantic
+  entry, native result node re-entry, relation expansion mode, and fallback
+  flags for Task 2-style GraphRAG substrate validation.
+
 ## [0.2.7] - 2026-05-07
 
 Patch release for graph ecosystem primitives needed by CaracalDB-only

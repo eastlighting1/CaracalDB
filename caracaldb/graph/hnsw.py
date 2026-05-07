@@ -30,6 +30,7 @@ class HnswConfig:
     ef_construction: int = 200
     metric: Metric = "cosine"
     max_elements: int = 1024
+    random_seed: int = 100
 
 
 class HnswIndex:
@@ -44,6 +45,7 @@ class HnswIndex:
             max_elements=max(1, config.max_elements),
             M=config.M,
             ef_construction=config.ef_construction,
+            random_seed=config.random_seed,
         )
         self._loaded_dim = config.dim
 

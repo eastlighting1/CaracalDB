@@ -49,8 +49,8 @@ latest bundle state.
 
 ## Graph ecosystem primitives
 
-v0.2.7 adds higher-level graph ecosystem APIs for semantic retrieval and
-evidence/path workloads:
+v0.2.8 adds higher-level graph ecosystem APIs for semantic retrieval,
+lexical lookup, indexed graph artifact access, and evidence/path workloads:
 
 ```python
 import pyarrow as pa
@@ -107,6 +107,62 @@ path = db.shortest_path(
     source="entity/a",
     target="chunk/1",
     edge_types=["RELATED_TO", "EVIDENCED_BY"],
+)
+```
+
+For lexical entry points, text indexes are generic node-property indexes. They
+rank exact and normalized matches before weaker token matches:
+
+```python
+db.create_text_index(
+    name="entity_name_text_idx",
+    node_type="Entity",
+    properties=["name", "canonical_name", "aliases"],
+)
+
+matches = db.text_search(
+    index="entity_name_text_idx",
+    query="Sam Bankman-Fried",
+    top_k=10,
+    return_properties=["name", "canonical_name", "entity_type"],
+)
+```
+
+Property indexes materialize lookup data and are reported by
+`profile`/`explain` when an equality predicate can use one:
+
+```python
+db.create_property_index(
+    name="entity_canonical_name_idx",
+    node_type="Entity",
+    property="canonical_name",
+)
+
+profile = db.profile("""
+MATCH (e:Entity)
+WHERE e.canonical_name = 'sam bankman fried'
+RETURN e.node_id, e.name
+LIMIT 1
+""")
+
+assert profile["indexes_used"] == ["entity_canonical_name_idx"]
+```
+
+`paths` also accepts multiple semantic or lexical seed nodes and ranks bounded
+paths to target node types:
+
+```python
+context = db.paths(
+    sources=["chunk/1", "entity/a"],
+    target_node_types=["Chunk"],
+    edge_types=["MENTIONS", "RELATED_TO", "EVIDENCED_BY"],
+    direction="both",
+    max_depth=3,
+    limit=200,
+    max_paths_per_seed=20,
+    path_score="product",
+    path_score_property="weight",
+    return_properties=["document_id", "text"],
 )
 ```
 
