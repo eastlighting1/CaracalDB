@@ -1,6 +1,29 @@
 """CaracalDB Python package scaffold."""
 
 from caracaldb._version import __version__
-from caracaldb.api import Connection, Database, NodeQuery, ResourceRef, Result, connect
+from caracaldb.api import (
+    Connection,
+    Database,
+    NodeQuery,
+    ResourceRef,
+    Result,
+    connect,
+    cosine_distance,
+    cosine_similarity,
+    dot_product,
+    l2_distance,
+)
 
-__all__ = ["Connection", "Database", "NodeQuery", "ResourceRef", "Result", "__version__", "connect"]
+__all__ = [
+    "Connection",
+    "Database",
+    "NodeQuery",
+    "ResourceRef",
+    "Result",
+    "__version__",
+    "connect",
+    "cosine_distance",
+    "cosine_similarity",
+    "dot_product",
+    "l2_distance",
+]

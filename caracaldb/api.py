@@ -10,8 +10,13 @@ mistranslation.
 
 from __future__ import annotations
 
+import ast as py_ast
+import json
+import os
+import re
 import shutil
 import tempfile
+import time
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from numbers import Integral
@@ -41,14 +46,16 @@ from caracaldb.exec.operators import (
 from caracaldb.graph.csc_builder import build_csc
 from caracaldb.graph.csr_builder import build_csr
 from caracaldb.graph.csr_reader import CsrReader
+from caracaldb.graph.hnsw import HnswConfig, HnswIndex
 from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.lang.tuft import ast as ta
 from caracaldb.lang.tuft import bind_program, parse_tuft
+from caracaldb.observability.profile import profile_pipeline
 from caracaldb.onto.catalog import Catalog, ClassDef, load_catalog, save_catalog
 from caracaldb.onto.closure import ClassClosureIndex
 from caracaldb.storage import Bundle, create_bundle, open_bundle
 from caracaldb.storage.edge_store import list_edge_stores, open_edge_store
-from caracaldb.storage.manifest import MANIFEST_NAME
+from caracaldb.storage.manifest import MANIFEST_NAME, utc_now_iso
 from caracaldb.storage.mvcc import SnapshotId
 from caracaldb.storage.node_store import NodeStore, list_node_stores, open_node_store
 from caracaldb.storage.pack import is_packed, pack_bundle
@@ -57,6 +64,13 @@ from caracaldb.storage.snapshot import (
     create_snapshot,
     list_snapshots,
     release_snapshot,
+)
+from caracaldb.vector import (
+    cosine_distance,
+    cosine_similarity,
+    dot_product,
+    l2_distance,
+    score_from_distance,
 )
 
 _INTERNAL_IRI_PREFIX = "caracaldb:local:"
@@ -71,6 +85,9 @@ _RDF_TYPE_PREDICATES = {
     "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
     "https://www.w3.org/1999/02/22-rdf-syntax-ns#type",
 }
+_VECTOR_INDEX_MANIFEST = "indexes.json"
+_PROPERTY_INDEX_MANIFEST = "property_indexes.json"
+_INDEX_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +233,9 @@ class Connection:
             raise CaracalError(
                 code="CDB-6020", message="parameter binding lands in M2; pass literals inline"
             )
+        stripped = text.strip()
+        if stripped.upper().startswith("CALL VECTOR.SEARCH"):
+            return _execute_vector_search_call(self._db, stripped)
         program = parse_tuft(text)
         # Binder runs best-effort: M1 MVP allows bare class names without a default prefix.
         # If binding fails because of missing prefix metadata, the planner does a local-name
@@ -233,19 +253,19 @@ class Connection:
         query = program.statements[0].query
         assert query is not None
         if _is_multi_element_pattern(query):
+            if _has_variable_length_pattern(query):
+                return _execute_variable_length_pattern_query(self._db, query)
             plan_p = _compile_pattern_query(query, self._db)
             op = _build_pattern_pipeline(plan_p, self._db)
             ctx = apply_as_of(ExecCtx(), plan_p.snapshot)
             batches = list(run_pipeline(op, ctx))
-            if plan_p.limit is not None:
-                batches = _apply_limit(batches, plan_p.limit)
+            batches = _apply_modifiers(batches, query.modifiers)
             return Result(batches)
         plan = _compile_query(query, self._db)
         op = _build_pipeline(plan, self._db)
         ctx = apply_as_of(ExecCtx(), plan.snapshot)
         batches = list(run_pipeline(op, ctx))
-        if plan.limit is not None:
-            batches = _apply_limit(batches, plan.limit)
+        batches = _apply_modifiers(batches, query.modifiers)
         return Result(batches)
 
 
@@ -549,6 +569,107 @@ class Database:
             refs[relation] = store.append(group, created_lsn=self._next_lsn())
             self._invalidate_graph_indexes(relation)
         return refs
+
+    def upsert_node_table_arrow(
+        self,
+        table: pa.Table,
+        *,
+        key_col: str = "node_id",
+        type_col: str = "type",
+        update_existing: bool = True,
+    ) -> dict[str, int]:
+        """Idempotently insert or update typed node rows from an Arrow table."""
+
+        return _upsert_node_table_arrow(
+            self,
+            table,
+            key_col=key_col,
+            type_col=type_col,
+            update_existing=update_existing,
+        )
+
+    def upsert_edge_table_arrow(
+        self,
+        table: pa.Table,
+        *,
+        edge_key_col: str = "edge_id",
+        src_col: str = "src",
+        dst_col: str = "dst",
+        type_col: str = "type",
+        node_key_col: str = "node_id",
+        update_existing: bool = True,
+    ) -> dict[str, int]:
+        """Idempotently insert or update typed edge rows from an Arrow table."""
+
+        return _upsert_edge_table_arrow(
+            self,
+            table,
+            edge_key_col=edge_key_col,
+            src_col=src_col,
+            dst_col=dst_col,
+            type_col=type_col,
+            node_key_col=node_key_col,
+            update_existing=update_existing,
+        )
+
+    def create_vector_index(
+        self,
+        *,
+        name: str,
+        node_type: str,
+        property: str,
+        dimension: int,
+        metric: str = "cosine",
+        algorithm: str = "hnsw",
+        options: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create and persist a vector index over a node vector property."""
+
+        return _create_vector_index(
+            self,
+            name=name,
+            node_type=node_type,
+            property_name=property,
+            dimension=dimension,
+            metric=metric,
+            algorithm=algorithm,
+            options=dict(options or {}),
+        )
+
+    def list_vector_indexes(self) -> list[dict[str, Any]]:
+        """Return persisted vector-index metadata ordered by index name."""
+
+        return _list_vector_indexes(self)
+
+    def drop_vector_index(self, name: str) -> bool:
+        """Drop vector-index metadata and index files without removing vectors."""
+
+        return _drop_vector_index(self, name)
+
+    def rebuild_vector_index(self, name: str) -> dict[str, Any]:
+        """Rebuild a persisted vector index from source node vectors."""
+
+        return _rebuild_vector_index(self, name)
+
+    def vector_search(
+        self,
+        *,
+        index: str,
+        query_vector: Iterable[float],
+        top_k: int,
+        filters: Mapping[str, Any] | None = None,
+        return_properties: Iterable[str] | None = None,
+    ) -> Result:
+        """Search a vector index and return graph-addressable node results."""
+
+        return _vector_search(
+            self,
+            index=index,
+            query_vector=query_vector,
+            top_k=top_k,
+            filters=dict(filters or {}),
+            return_properties=tuple(return_properties or ()),
+        )
 
     def insert_triples(
         self,
@@ -938,6 +1059,181 @@ class Database:
             }
         )
 
+    def neighbors(
+        self,
+        *,
+        seed_node_ids: Iterable[Any],
+        edge_types: Iterable[str],
+        direction: str = "out",
+        depth: int = 1,
+        limit: int | None = None,
+        node_type_filters: Iterable[str] | None = None,
+        edge_filters: Mapping[str, Any] | None = None,
+        return_paths: bool = False,
+        node_key_col: str = "node_id",
+        weight_property: str | None = None,
+        top_edges_per_node: int | None = None,
+        path_score: str | None = None,
+        path_score_property: str = "weight",
+        order_by_path_score: str | None = None,
+    ) -> Result:
+        """Traverse typed relations from seed nodes and return reached nodes."""
+
+        return _neighbors(
+            self,
+            seed_node_ids=tuple(seed_node_ids),
+            edge_types=tuple(edge_types),
+            direction=direction,
+            depth=depth,
+            limit=limit,
+            node_type_filters=tuple(node_type_filters or ()),
+            edge_filters=dict(edge_filters or {}),
+            return_paths=return_paths,
+            node_key_col=node_key_col,
+            weight_property=weight_property,
+            top_edges_per_node=top_edges_per_node,
+            path_score=path_score,
+            path_score_property=path_score_property,
+            order_by_path_score=order_by_path_score,
+        )
+
+    def k_hop(
+        self,
+        *,
+        seeds: Iterable[Any],
+        depth: int,
+        edge_types: Iterable[str],
+        direction: str = "out",
+        max_nodes: int = 500,
+        max_edges: int = 2000,
+        node_key_col: str = "node_id",
+    ) -> dict[str, pa.Table]:
+        """Return a bounded k-hop subgraph as Arrow node and edge tables."""
+
+        return _k_hop(
+            self,
+            seeds=tuple(seeds),
+            depth=depth,
+            edge_types=tuple(edge_types),
+            direction=direction,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+            node_key_col=node_key_col,
+        )
+
+    def paths(
+        self,
+        *,
+        source: Any,
+        target: Any,
+        edge_types: Iterable[str],
+        max_depth: int,
+        limit: int = 20,
+        direction: str = "out",
+        edge_filters: Mapping[str, Any] | None = None,
+        node_key_col: str = "node_id",
+        score: str | None = None,
+        score_property: str = "weight",
+        order: str = "desc",
+    ) -> Result:
+        """Return deterministic bounded paths between two nodes."""
+
+        return _paths(
+            self,
+            source=source,
+            target=target,
+            edge_types=tuple(edge_types),
+            max_depth=max_depth,
+            limit=limit,
+            direction=direction,
+            edge_filters=dict(edge_filters or {}),
+            node_key_col=node_key_col,
+            score=score,
+            score_property=score_property,
+            order=order,
+        )
+
+    def shortest_path(
+        self,
+        *,
+        source: Any,
+        target: Any,
+        edge_types: Iterable[str],
+        max_depth: int | None = None,
+        direction: str = "out",
+        edge_filters: Mapping[str, Any] | None = None,
+        node_key_col: str = "node_id",
+    ) -> dict[str, Any] | None:
+        """Return one deterministic shortest path, or ``None`` if unreachable."""
+
+        return _shortest_path(
+            self,
+            source=source,
+            target=target,
+            edge_types=tuple(edge_types),
+            max_depth=max_depth,
+            direction=direction,
+            edge_filters=dict(edge_filters or {}),
+            node_key_col=node_key_col,
+        )
+
+    def create_property_index(
+        self,
+        *,
+        name: str,
+        node_type: str | None = None,
+        property: str,
+        edge_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist metadata for a property lookup index."""
+
+        return _create_property_index(
+            self,
+            name=name,
+            node_type=node_type,
+            property_name=property,
+            edge_type=edge_type,
+        )
+
+    def list_property_indexes(self) -> list[dict[str, Any]]:
+        """Return persisted property-index metadata ordered by name."""
+
+        return _list_property_indexes(self)
+
+    def capabilities(self) -> dict[str, Any]:
+        """Return feature flags without running a query."""
+
+        from caracaldb._version import __version__
+
+        return {
+            "version": __version__,
+            "vector_property": True,
+            "vector_index.hnsw": True,
+            "vector_search": True,
+            "vector_distance_functions": True,
+            "traversal.neighbors": True,
+            "traversal.k_hop": True,
+            "traversal.paths": True,
+            "traversal.shortest_path": True,
+            "traversal.weighted_edges": True,
+            "tuft.vector_search": True,
+            "tuft.variable_length_paths": True,
+            "explain": True,
+            "profile": True,
+            "batch_upsert": True,
+            "property_index": True,
+        }
+
+    def explain(self, text: str) -> dict[str, Any]:
+        """Return a machine-readable explain skeleton for a Tuft query."""
+
+        return _explain_query(self, text)
+
+    def profile(self, text: str) -> dict[str, Any]:
+        """Profile a Tuft query and return machine-readable telemetry."""
+
+        return _profile_query(self, text)
+
     def create_snapshot(self, name: str) -> SnapshotId:
         """Pin a named snapshot at the current bundle LSN.
 
@@ -1212,6 +1508,1749 @@ def _parse_exec_literal(value: str) -> object:
         return value
 
 
+def _execute_vector_search_call(db: Database, text: str) -> Result:
+    spec = _parse_vector_search_call(text)
+    result = db.vector_search(
+        index=spec["index"],
+        query_vector=spec["query_vector"],
+        top_k=spec["top_k"],
+        filters=spec["filters"],
+        return_properties=spec["return_properties"],
+    )
+    table = result.arrow()
+    columns = spec["return_columns"] or spec["yield_columns"]
+    if columns:
+        missing = [name for name in columns if name not in table.column_names]
+        if missing:
+            raise CaracalError(
+                code="CDB-6020",
+                message=f"CALL vector.search requested unknown column: {missing[0]!r}",
+            )
+        table = table.select(columns)
+    order_by = spec["order_by"]
+    if order_by is not None and table.num_rows:
+        name, descending = order_by
+        if name not in table.column_names:
+            raise CaracalError(
+                code="CDB-6020",
+                message=f"ORDER BY column is not projected by vector.search: {name!r}",
+            )
+        rows = table.to_pylist()
+        rows.sort(key=lambda row: row.get(name), reverse=descending)
+        table = pa.Table.from_pylist(rows, schema=table.schema)
+    limit = spec["limit"]
+    if limit is not None:
+        table = table.slice(0, limit)
+    return Result(_table_to_batches(table))
+
+
+def _profile_vector_search_call(db: Database, text: str) -> dict[str, Any]:
+    start = time.perf_counter()
+    spec = _parse_vector_search_call(text)
+    result = _execute_vector_search_call(db, text)
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    count = result.arrow().num_rows
+    return {
+        "logical_plan": "vector_search_call",
+        "physical_plan": "VectorSearch",
+        "indexes_used": [spec["index"]],
+        "vector_index_used": spec["index"],
+        "node_rows_scanned": 0,
+        "edge_rows_scanned": 0,
+        "candidate_count": count,
+        "result_count": count,
+        "elapsed_ms": elapsed_ms,
+        "operator_timings": [
+            {
+                "name": "VectorSearch",
+                "rows": count,
+                "batches": len(list(result.record_batches())),
+                "elapsed_ms": elapsed_ms,
+                "peak_bytes": 0,
+            }
+        ],
+        "fallback_flags": [],
+    }
+
+
+def _explain_vector_search_call(db: Database, text: str) -> dict[str, Any]:
+    spec = _parse_vector_search_call(text)
+    return {
+        "logical_plan": "vector_search_call",
+        "physical_plan": "VectorSearch",
+        "indexes_used": [spec["index"]],
+        "vector_index_used": spec["index"],
+        "limit": spec["limit"],
+        "fallback_flags": [],
+    }
+
+
+def _parse_vector_search_call(text: str) -> dict[str, Any]:
+    pattern = re.compile(
+        r"""
+        ^CALL\s+vector\.search\s*
+        \((?P<args>.*?)\)
+        (?:\s+YIELD\s+(?P<yield>.*?))?
+        (?:\s+RETURN\s+(?P<return>.*?))?
+        (?:\s+ORDER\s+BY\s+(?P<order>[A-Za-z_][A-Za-z0-9_]*)(?:\s+(?P<dir>ASC|DESC))?)?
+        (?:\s+LIMIT\s+(?P<limit>\d+))?
+        \s*;?\s*$
+        """,
+        re.IGNORECASE | re.VERBOSE | re.DOTALL,
+    )
+    match = pattern.match(text)
+    if match is None:
+        raise CaracalError(
+            code="CDB-6020",
+            message=(
+                "CALL vector.search supports: "
+                "CALL vector.search('index', [vector], k) YIELD ... RETURN ... LIMIT n"
+            ),
+        )
+    args = _split_call_args(match.group("args"))
+    if len(args) < 3 or len(args) > 5:
+        raise CaracalError(
+            code="CDB-6020",
+            message="vector.search takes index, query_vector, top_k, optional filters, properties",
+        )
+    index = _literal_arg(args[0], "vector index name")
+    query_vector = _literal_arg(args[1], "query vector")
+    top_k = _literal_arg(args[2], "top_k")
+    filters = _literal_arg(args[3], "filters") if len(args) >= 4 else {}
+    return_properties = _literal_arg(args[4], "return_properties") if len(args) >= 5 else []
+    if not isinstance(index, str):
+        raise CaracalError(code="CDB-6020", message="vector.search index must be a string literal")
+    if not isinstance(query_vector, list):
+        raise CaracalError(code="CDB-6020", message="vector.search query vector must be a list")
+    if not isinstance(top_k, int):
+        raise CaracalError(code="CDB-6020", message="vector.search top_k must be an integer")
+    if not isinstance(filters, dict):
+        raise CaracalError(code="CDB-6020", message="vector.search filters must be a map/dict")
+    if not isinstance(return_properties, list):
+        raise CaracalError(
+            code="CDB-6020",
+            message="vector.search return_properties must be a list of strings",
+        )
+    yield_columns = _parse_column_list(match.group("yield"))
+    return_columns = _parse_column_list(match.group("return"))
+    order_name = match.group("order")
+    order_by = None
+    if order_name is not None:
+        order_by = (order_name, (match.group("dir") or "ASC").upper() == "DESC")
+    limit = int(match.group("limit")) if match.group("limit") is not None else None
+    return {
+        "index": index,
+        "query_vector": query_vector,
+        "top_k": top_k,
+        "filters": filters,
+        "return_properties": tuple(str(item) for item in return_properties),
+        "yield_columns": yield_columns,
+        "return_columns": return_columns,
+        "order_by": order_by,
+        "limit": limit,
+    }
+
+
+def _split_call_args(text: str) -> list[str]:
+    args: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    escape = False
+    for index, char in enumerate(text):
+        if quote is not None:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char in "[{(":
+            depth += 1
+        elif char in "]})":
+            depth -= 1
+        elif char == "," and depth == 0:
+            args.append(text[start:index].strip())
+            start = index + 1
+    tail = text[start:].strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
+def _literal_arg(text: str, label: str) -> Any:
+    try:
+        return py_ast.literal_eval(text)
+    except (SyntaxError, ValueError) as exc:
+        raise CaracalError(code="CDB-6020", message=f"invalid {label}: {text!r}") from exc
+
+
+def _parse_column_list(text: str | None) -> list[str]:
+    if text is None:
+        return []
+    cleaned = text.strip()
+    if not cleaned:
+        return []
+    return [part.strip() for part in cleaned.split(",") if part.strip()]
+
+
+def _upsert_node_table_arrow(
+    db: Database,
+    table: pa.Table,
+    *,
+    key_col: str,
+    type_col: str,
+    update_existing: bool,
+) -> dict[str, int]:
+    if table.num_rows == 0:
+        raise CaracalError(code="CDB-7011", message="cannot upsert an empty node table")
+    _require_table_columns(table, (key_col, type_col), "node table")
+    if _INTERNAL_GID_COLUMN in table.column_names:
+        raise CaracalError(
+            code="CDB-7011",
+            message=f"node upsert table must not include reserved column {_INTERNAL_GID_COLUMN!r}",
+        )
+
+    existing: dict[Any, dict[str, Any]] = {}
+    touched_types: set[str] = set()
+    max_gid = -1
+    for class_name in list_node_stores(db.bundle):
+        cls = db._find_class(class_name)
+        store = open_node_store(
+            db.bundle,
+            class_iri=cls.iri,
+            local_name=cls.local_name or _local(cls.iri),
+        )
+        current = store.to_table()
+        if key_col not in current.column_names or type_col not in current.column_names:
+            continue
+        for row in current.to_pylist():
+            if row.get(key_col) is None:
+                continue
+            clean = _strip_row_columns(row, {"nid", "_created_lsn", "_deleted_lsn"})
+            if _INTERNAL_GID_COLUMN in clean:
+                max_gid = max(max_gid, int(clean[_INTERNAL_GID_COLUMN]))
+            existing[clean[key_col]] = clean
+            touched_types.add(_coerce_local_name(clean[type_col], "node type"))
+
+    final = dict(existing)
+    inserted = updated = skipped = 0
+    next_gid = max_gid + 1
+    for raw in table.to_pylist():
+        _require_columns(raw, (key_col, type_col), "node table")
+        key = raw[key_col]
+        class_name = _coerce_local_name(raw[type_col], "node type")
+        touched_types.add(class_name)
+        if key in existing:
+            if not update_existing:
+                skipped += 1
+                continue
+            merged = {**existing[key], **raw}
+            merged[_INTERNAL_GID_COLUMN] = existing[key].get(_INTERNAL_GID_COLUMN, next_gid)
+            if _INTERNAL_GID_COLUMN not in existing[key]:
+                next_gid += 1
+            final[key] = merged
+            updated += 1
+        else:
+            out = dict(raw)
+            out[_INTERNAL_GID_COLUMN] = next_gid
+            next_gid += 1
+            final[key] = out
+            existing[key] = out
+            inserted += 1
+
+    rows_by_type: dict[str, list[dict[str, Any]]] = {name: [] for name in touched_types}
+    for row in final.values():
+        if type_col not in row:
+            continue
+        rows_by_type.setdefault(_coerce_local_name(row[type_col], "node type"), []).append(row)
+
+    for class_name in sorted(rows_by_type):
+        db.define_class(class_name)
+        _replace_node_store_rows(db, class_name, rows_by_type[class_name])
+    db._invalidate_graph_indexes()
+    return {"inserted": inserted, "updated": updated, "skipped": skipped, "failed": 0}
+
+
+def _upsert_edge_table_arrow(
+    db: Database,
+    table: pa.Table,
+    *,
+    edge_key_col: str,
+    src_col: str,
+    dst_col: str,
+    type_col: str,
+    node_key_col: str,
+    update_existing: bool,
+) -> dict[str, int]:
+    if table.num_rows == 0:
+        raise CaracalError(code="CDB-7021", message="cannot upsert an empty edge table")
+    _require_table_columns(table, (edge_key_col, src_col, dst_col, type_col), "edge table")
+    if "eid" in table.column_names:
+        raise CaracalError(
+            code="CDB-7021",
+            message="edge upsert table must not include an 'eid' column; it is assigned",
+        )
+
+    existing: dict[Any, dict[str, Any]] = {}
+    touched_types: set[str] = set()
+    for relation in list_edge_stores(db.bundle):
+        prop = _find_property_by_local_name(db, relation)
+        if prop is None:
+            continue
+        store = open_edge_store(
+            db.bundle,
+            property_iri=prop.iri,
+            local_name=prop.local_name or _local(prop.iri),
+        )
+        current = store.to_table()
+        if edge_key_col not in current.column_names:
+            continue
+        for row in current.to_pylist():
+            if row.get(edge_key_col) is None:
+                continue
+            clean = _strip_row_columns(row, {"eid", "_created_lsn", "_deleted_lsn"})
+            existing[clean[edge_key_col]] = clean
+            touched_types.add(_coerce_local_name(clean.get(type_col, relation), "edge type"))
+
+    id_map = _external_id_map(db, key_col=node_key_col)
+    final = dict(existing)
+    inserted = updated = skipped = 0
+    for raw in table.to_pylist():
+        _require_columns(raw, (edge_key_col, src_col, dst_col, type_col), "edge table")
+        key = raw[edge_key_col]
+        relation = _coerce_local_name(raw[type_col], "edge type")
+        touched_types.add(relation)
+        resolved = dict(raw)
+        resolved["src"] = _resolve_external_node_id(id_map, raw[src_col], src_col)
+        resolved["dst"] = _resolve_external_node_id(id_map, raw[dst_col], dst_col)
+        resolved[type_col] = raw[type_col]
+        if key in existing:
+            if not update_existing:
+                skipped += 1
+                continue
+            final[key] = {**existing[key], **resolved}
+            updated += 1
+        else:
+            final[key] = resolved
+            existing[key] = resolved
+            inserted += 1
+
+    rows_by_type: dict[str, list[dict[str, Any]]] = {name: [] for name in touched_types}
+    for row in final.values():
+        relation = _coerce_local_name(row.get(type_col), "edge type")
+        rows_by_type.setdefault(relation, []).append(row)
+
+    for relation in sorted(rows_by_type):
+        db._define_property(relation)
+        _replace_edge_store_rows(db, relation, rows_by_type[relation])
+        db._invalidate_graph_indexes(relation)
+    return {"inserted": inserted, "updated": updated, "skipped": skipped, "failed": 0}
+
+
+def _strip_row_columns(row: Mapping[str, Any], names: set[str]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if key not in names}
+
+
+def _replace_node_store_rows(db: Database, class_name: str, rows: list[dict[str, Any]]) -> None:
+    cls = db._find_class(class_name)
+    local_name = cls.local_name or _local(cls.iri)
+    root = db.bundle.child("nodes", local_name)
+    if root.exists():
+        shutil.rmtree(root)
+    store = open_node_store(
+        db.bundle,
+        class_iri=cls.iri,
+        local_name=local_name,
+        create=True,
+    )
+    if not rows:
+        return
+    payload = [_strip_row_columns(row, {"nid", "_created_lsn", "_deleted_lsn"}) for row in rows]
+    store.append(pa.Table.from_pylist(payload), created_lsn=db._next_lsn())
+
+
+def _replace_edge_store_rows(db: Database, relation: str, rows: list[dict[str, Any]]) -> None:
+    prop = db._find_property(relation)
+    local_name = prop.local_name or _local(prop.iri)
+    root = db.bundle.child("edges", local_name)
+    if root.exists():
+        shutil.rmtree(root)
+    store = open_edge_store(
+        db.bundle,
+        property_iri=prop.iri,
+        local_name=local_name,
+        create=True,
+    )
+    if not rows:
+        return
+    payload = [_strip_row_columns(row, {"eid", "_created_lsn", "_deleted_lsn"}) for row in rows]
+    store.append(_edge_table(payload), created_lsn=db._next_lsn())
+
+
+def _create_vector_index(
+    db: Database,
+    *,
+    name: str,
+    node_type: str,
+    property_name: str,
+    dimension: int,
+    metric: str,
+    algorithm: str,
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    _assert_index_name(name, "vector index")
+    if dimension <= 0:
+        raise CaracalError(code="CDB-7091", message="vector index dimension must be positive")
+    metric = _normalize_vector_metric(metric)
+    algorithm = algorithm.lower()
+    if algorithm not in {"hnsw", "exact"}:
+        raise CaracalError(
+            code="CDB-7090",
+            message=f"unsupported vector index algorithm: {algorithm!r}",
+            hint="supported algorithms are 'hnsw' and 'exact'",
+        )
+    cls = db._find_class(node_type)
+    node_local = cls.local_name or _local(cls.iri)
+    metadata = _load_vector_index_manifest(db)
+    if name in metadata:
+        existing = metadata[name]
+        if _same_vector_definition(
+            existing,
+            node_type=node_local,
+            property_name=property_name,
+            dimension=dimension,
+            metric=metric,
+            algorithm=algorithm,
+            options=options,
+        ):
+            return dict(existing)
+        raise CaracalError(
+            code="CDB-7090",
+            message=f"vector index already exists with a different definition: {name!r}",
+        )
+    table = _node_table_for_local(db, node_local)
+    id_column = _vector_id_column(table)
+    meta = {
+        "name": name,
+        "node_type": node_local,
+        "property": property_name,
+        "dimension": dimension,
+        "metric": metric,
+        "algorithm": algorithm,
+        "options": dict(sorted(options.items())),
+        "status": "building",
+        "id_column": id_column,
+        "count": 0,
+        "created_at": utc_now_iso(),
+        "updated_at": utc_now_iso(),
+    }
+    metadata[name] = meta
+    _write_vector_index_manifest(db, metadata)
+    return _build_vector_index(db, meta)
+
+
+def _same_vector_definition(
+    meta: Mapping[str, Any],
+    *,
+    node_type: str,
+    property_name: str,
+    dimension: int,
+    metric: str,
+    algorithm: str,
+    options: Mapping[str, Any],
+) -> bool:
+    return (
+        meta.get("node_type") == node_type
+        and meta.get("property") == property_name
+        and int(meta.get("dimension", -1)) == dimension
+        and meta.get("metric") == metric
+        and meta.get("algorithm") == algorithm
+        and dict(meta.get("options", {})) == dict(sorted(options.items()))
+    )
+
+
+def _list_vector_indexes(db: Database) -> list[dict[str, Any]]:
+    metadata = _load_vector_index_manifest(db)
+    return [dict(metadata[name]) for name in sorted(metadata)]
+
+
+def _drop_vector_index(db: Database, name: str) -> bool:
+    metadata = _load_vector_index_manifest(db)
+    if name not in metadata:
+        return False
+    meta = metadata.pop(name)
+    index_file = meta.get("index_file")
+    if index_file:
+        db.bundle.child(str(index_file)).unlink(missing_ok=True)
+    _write_vector_index_manifest(db, metadata)
+    return True
+
+
+def _rebuild_vector_index(db: Database, name: str) -> dict[str, Any]:
+    metadata = _load_vector_index_manifest(db)
+    if name not in metadata:
+        raise CaracalError(code="CDB-7092", message=f"vector index not found: {name!r}")
+    meta = dict(metadata[name])
+    meta["status"] = "building"
+    meta["updated_at"] = utc_now_iso()
+    metadata[name] = meta
+    _write_vector_index_manifest(db, metadata)
+    return _build_vector_index(db, meta)
+
+
+def _build_vector_index(db: Database, meta: dict[str, Any]) -> dict[str, Any]:
+    entries, _table = _vector_entries(db, meta)
+    meta = dict(meta)
+    meta["count"] = len(entries)
+    if meta["algorithm"] == "hnsw":
+        index_path = _vector_index_file(db, meta["name"])
+        if entries:
+            import numpy as np
+
+            config = _hnsw_config(meta, max_elements=max(1, len(entries)))
+            index = HnswIndex(config)
+            vectors = np.vstack([entry["vector"] for entry in entries]).astype(np.float32)
+            ids = np.asarray([entry["internal_id"] for entry in entries], dtype=np.uint64)
+            index.add(ids, vectors)
+            index.save(index_path)
+        else:
+            index_path.unlink(missing_ok=True)
+        meta["index_file"] = str(index_path.relative_to(db.bundle.path)).replace("\\", "/")
+    else:
+        old_file = meta.get("index_file")
+        if old_file:
+            db.bundle.child(str(old_file)).unlink(missing_ok=True)
+        meta["index_file"] = None
+    meta["status"] = "ready"
+    meta["updated_at"] = utc_now_iso()
+    metadata = _load_vector_index_manifest(db)
+    metadata[meta["name"]] = meta
+    _write_vector_index_manifest(db, metadata)
+    return dict(meta)
+
+
+def _vector_search(
+    db: Database,
+    *,
+    index: str,
+    query_vector: Iterable[float],
+    top_k: int,
+    filters: dict[str, Any],
+    return_properties: tuple[str, ...],
+) -> Result:
+    if top_k < 0:
+        raise CaracalError(code="CDB-6090", message="top_k must be >= 0")
+    metadata = _load_vector_index_manifest(db)
+    if index not in metadata:
+        raise CaracalError(code="CDB-7092", message=f"vector index not found: {index!r}")
+    meta = metadata[index]
+    import numpy as np
+
+    query = np.asarray(list(query_vector), dtype=np.float32)
+    if query.ndim != 1 or int(query.shape[0]) != int(meta["dimension"]):
+        got = int(query.shape[0]) if query.ndim == 1 else tuple(query.shape)
+        raise CaracalError(
+            code="CDB-7091",
+            message=(
+                f"query dimension mismatch for {index!r}: "
+                f"expected {meta['dimension']}, got {got}"
+            ),
+        )
+    entries, table = _vector_entries(db, meta)
+    _validate_vector_filters_and_properties(table, filters, return_properties)
+    if top_k == 0 or not entries:
+        return Result(_table_to_batches(_vector_result_table(meta, table, [], return_properties)))
+
+    if filters or meta["algorithm"] == "exact":
+        candidates = [entry for entry in entries if _row_matches_filters(entry["row"], filters)]
+        rows = _rank_exact_vector_candidates(meta, query, candidates, top_k, return_properties)
+        return Result(_table_to_batches(_vector_result_table(meta, table, rows, return_properties)))
+
+    index_file = meta.get("index_file")
+    if not index_file:
+        rows = _rank_exact_vector_candidates(meta, query, entries, top_k, return_properties)
+        return Result(_table_to_batches(_vector_result_table(meta, table, rows, return_properties)))
+    hnsw = HnswIndex.load(db.bundle.child(str(index_file)), config=_hnsw_config(meta))
+    labels, distances = hnsw.search(query, k=min(top_k, len(entries)), ef=_ef_search(meta))
+    by_internal = {int(entry["internal_id"]): entry for entry in entries}
+    rows = []
+    for internal_id, distance in zip(labels[0].tolist(), distances[0].tolist(), strict=True):
+        entry = by_internal.get(int(internal_id))
+        if entry is None:
+            continue
+        score = score_from_distance(meta["metric"], float(distance), query, entry["vector"])
+        rows.append(_vector_result_row(meta, entry, float(distance), score, return_properties))
+    rows.sort(key=lambda row: (-float(row["score"]), int(row["internal_id"])))
+    rows = rows[:top_k]
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = rank
+    return Result(_table_to_batches(_vector_result_table(meta, table, rows, return_properties)))
+
+
+def _rank_exact_vector_candidates(
+    meta: Mapping[str, Any],
+    query: Any,
+    entries: list[dict[str, Any]],
+    top_k: int,
+    return_properties: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    rows = []
+    for entry in entries:
+        metric = str(meta["metric"])
+        if metric == "cosine":
+            distance = cosine_distance(query, entry["vector"])
+            score = 1.0 - distance
+        elif metric == "l2":
+            distance = l2_distance(query, entry["vector"])
+            score = -distance
+        elif metric in {"ip", "dot", "dot_product"}:
+            score = dot_product(query, entry["vector"])
+            distance = -score
+        else:
+            raise CaracalError(code="CDB-7090", message=f"unsupported vector metric: {metric!r}")
+        rows.append(
+            _vector_result_row(meta, entry, float(distance), float(score), return_properties)
+        )
+    rows.sort(key=lambda row: (-float(row["score"]), int(row["internal_id"])))
+    rows = rows[:top_k]
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = rank
+    return rows
+
+
+def _vector_result_row(
+    meta: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    distance: float,
+    score: float,
+    return_properties: tuple[str, ...],
+) -> dict[str, Any]:
+    row = entry["row"]
+    return {
+        "node_id": row.get("node_id", entry["internal_id"]),
+        "node_type": meta["node_type"],
+        "internal_id": int(entry["internal_id"]),
+        "score": float(score),
+        "distance": float(distance),
+        "rank": 0,
+        "matched_property": meta["property"],
+        "selected_properties": {name: row.get(name) for name in return_properties},
+    }
+
+
+def _vector_result_table(
+    meta: Mapping[str, Any],
+    source: pa.Table,
+    rows: list[dict[str, Any]],
+    return_properties: tuple[str, ...],
+) -> pa.Table:
+    node_id_type = (
+        source.schema.field("node_id").type if "node_id" in source.column_names else pa.uint64()
+    )
+    selected_type = pa.struct(
+        [
+            pa.field(
+                name,
+                source.schema.field(name).type if name in source.column_names else pa.null(),
+            )
+            for name in return_properties
+        ]
+    )
+    schema = pa.schema(
+        [
+            pa.field("node_id", node_id_type),
+            pa.field("node_type", pa.string()),
+            pa.field("internal_id", pa.uint64()),
+            pa.field("score", pa.float32()),
+            pa.field("distance", pa.float32()),
+            pa.field("rank", pa.uint64()),
+            pa.field("matched_property", pa.string()),
+            pa.field("selected_properties", selected_type),
+        ]
+    )
+    if not rows:
+        return pa.Table.from_batches([], schema=schema)
+    return pa.table(
+        [
+            pa.array([row["node_id"] for row in rows], type=node_id_type),
+            pa.array([row["node_type"] for row in rows], type=pa.string()),
+            pa.array([row["internal_id"] for row in rows], type=pa.uint64()),
+            pa.array([row["score"] for row in rows], type=pa.float32()),
+            pa.array([row["distance"] for row in rows], type=pa.float32()),
+            pa.array([row["rank"] for row in rows], type=pa.uint64()),
+            pa.array([row["matched_property"] for row in rows], type=pa.string()),
+            pa.array([row["selected_properties"] for row in rows], type=selected_type),
+        ],
+        schema=schema,
+    )
+
+
+def _vector_entries(
+    db: Database,
+    meta: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], pa.Table]:
+    import numpy as np
+
+    table = _node_table_for_local(db, str(meta["node_type"]))
+    property_name = str(meta["property"])
+    if property_name not in table.column_names:
+        raise CaracalError(
+            code="CDB-7091",
+            message=f"missing vector property {property_name!r} on node type {meta['node_type']!r}",
+        )
+    id_column = str(meta.get("id_column") or _vector_id_column(table))
+    if id_column not in table.column_names:
+        raise CaracalError(
+            code="CDB-7091",
+            message=f"vector index id column missing from source table: {id_column!r}",
+        )
+    dimension = int(meta["dimension"])
+    allow_null = bool(dict(meta.get("options", {})).get("allow_null_vectors", False))
+    entries: list[dict[str, Any]] = []
+    for row in table.to_pylist():
+        raw_vector = row.get(property_name)
+        if raw_vector is None:
+            if allow_null:
+                continue
+            raise CaracalError(
+                code="CDB-7091",
+                message=(
+                    f"null vector in {meta['node_type']!r}.{property_name}; "
+                    "set allow_null_vectors to index sparse rows"
+                ),
+            )
+        vector = np.asarray(raw_vector, dtype=np.float32)
+        if vector.ndim != 1 or int(vector.shape[0]) != dimension:
+            got = int(vector.shape[0]) if vector.ndim == 1 else tuple(vector.shape)
+            raise CaracalError(
+                code="CDB-7091",
+                message=(
+                    f"dimension mismatch in {meta['node_type']!r}.{property_name}: "
+                    f"expected {dimension}, got {got}"
+                ),
+            )
+        entries.append({"internal_id": int(row[id_column]), "row": row, "vector": vector})
+    return entries, table
+
+
+def _node_table_for_local(db: Database, class_name: str) -> pa.Table:
+    cls = db._find_class(class_name)
+    store = open_node_store(
+        db.bundle,
+        class_iri=cls.iri,
+        local_name=cls.local_name or _local(cls.iri),
+    )
+    return store.to_table()
+
+
+def _vector_id_column(table: pa.Table) -> str:
+    return _INTERNAL_GID_COLUMN if _INTERNAL_GID_COLUMN in table.column_names else "nid"
+
+
+def _validate_vector_filters_and_properties(
+    table: pa.Table,
+    filters: Mapping[str, Any],
+    return_properties: tuple[str, ...],
+) -> None:
+    missing_filters = [name for name in filters if name not in table.column_names]
+    if missing_filters:
+        raise CaracalError(
+            code="CDB-7091",
+            message=f"vector search filter column missing: {missing_filters[0]!r}",
+        )
+    missing_props = [name for name in return_properties if name not in table.column_names]
+    if missing_props:
+        raise CaracalError(
+            code="CDB-7091",
+            message=f"vector search return property missing: {missing_props[0]!r}",
+        )
+
+
+def _row_matches_filters(row: Mapping[str, Any], filters: Mapping[str, Any]) -> bool:
+    return all(row.get(name) == value for name, value in filters.items())
+
+
+def _normalize_vector_metric(metric: str) -> str:
+    normalized = metric.lower()
+    if normalized in {"cosine", "l2"}:
+        return normalized
+    if normalized in {"ip", "dot", "dot_product"}:
+        return "dot_product"
+    raise CaracalError(
+        code="CDB-7090",
+        message=f"unsupported vector metric: {metric!r}",
+        hint="supported metrics are 'cosine', 'l2', and 'dot_product'",
+    )
+
+
+def _hnsw_metric(metric: str) -> str:
+    return "ip" if metric in {"dot", "dot_product"} else metric
+
+
+def _hnsw_config(meta: Mapping[str, Any], *, max_elements: int | None = None) -> HnswConfig:
+    options = dict(meta.get("options", {}))
+    count = max(1, int(meta.get("count", 1)))
+    return HnswConfig(
+        dim=int(meta["dimension"]),
+        M=int(options.get("m", options.get("M", 16))),
+        ef_construction=int(options.get("ef_construction", 200)),
+        metric=_hnsw_metric(str(meta["metric"])),  # type: ignore[arg-type]
+        max_elements=int(max_elements or options.get("max_elements", count)),
+    )
+
+
+def _ef_search(meta: Mapping[str, Any]) -> int | None:
+    value = dict(meta.get("options", {})).get("ef_search")
+    return None if value is None else int(value)
+
+
+def _vector_index_file(db: Database, name: str) -> Path:
+    return db.bundle.child("vec", f"{name}.hnsw")
+
+
+def _load_vector_index_manifest(db: Database) -> dict[str, dict[str, Any]]:
+    path = db.bundle.child("vec", _VECTOR_INDEX_MANIFEST)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CaracalError(
+            code="CDB-7092",
+            message=f"corrupt vector index metadata: {path}",
+        ) from exc
+    return {str(item["name"]): dict(item) for item in payload.get("indexes", [])}
+
+
+def _write_vector_index_manifest(
+    db: Database,
+    metadata: Mapping[str, Mapping[str, Any]],
+) -> None:
+    root = db.bundle.child("vec")
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / _VECTOR_INDEX_MANIFEST
+    payload = {"indexes": [dict(metadata[name]) for name in sorted(metadata)]}
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _create_property_index(
+    db: Database,
+    *,
+    name: str,
+    node_type: str | None,
+    property_name: str,
+    edge_type: str | None,
+) -> dict[str, Any]:
+    _assert_index_name(name, "property index")
+    if (node_type is None) == (edge_type is None):
+        raise CaracalError(
+            code="CDB-7093",
+            message="property index requires exactly one of node_type or edge_type",
+        )
+    if node_type is not None:
+        cls = db._find_class(node_type)
+        owner = cls.local_name or _local(cls.iri)
+        kind = "node"
+        table = _node_table_for_local(db, owner)
+    else:
+        prop = db._find_property(edge_type or "")
+        owner = prop.local_name or _local(prop.iri)
+        kind = "edge"
+        table = db.edge_table(owner)
+    if property_name not in table.column_names:
+        raise CaracalError(
+            code="CDB-7093",
+            message=f"property index source column missing: {property_name!r}",
+        )
+    metadata = _load_property_index_manifest(db)
+    meta = {
+        "name": name,
+        "kind": kind,
+        "node_type": owner if kind == "node" else None,
+        "edge_type": owner if kind == "edge" else None,
+        "property": property_name,
+        "status": "ready",
+        "created_at": utc_now_iso(),
+        "updated_at": utc_now_iso(),
+    }
+    if name in metadata:
+        existing = metadata[name]
+        comparable = {
+            key: existing.get(key) for key in ("kind", "node_type", "edge_type", "property")
+        }
+        wanted = {key: meta.get(key) for key in ("kind", "node_type", "edge_type", "property")}
+        if comparable != wanted:
+            raise CaracalError(
+                code="CDB-7093",
+                message=f"property index already exists with a different definition: {name!r}",
+            )
+        return dict(existing)
+    metadata[name] = meta
+    _write_property_index_manifest(db, metadata)
+    return dict(meta)
+
+
+def _list_property_indexes(db: Database) -> list[dict[str, Any]]:
+    metadata = _load_property_index_manifest(db)
+    return [dict(metadata[name]) for name in sorted(metadata)]
+
+
+def _load_property_index_manifest(db: Database) -> dict[str, dict[str, Any]]:
+    path = db.bundle.child("indexes", _PROPERTY_INDEX_MANIFEST)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CaracalError(
+            code="CDB-7093",
+            message=f"corrupt property index metadata: {path}",
+        ) from exc
+    return {str(item["name"]): dict(item) for item in payload.get("indexes", [])}
+
+
+def _write_property_index_manifest(
+    db: Database,
+    metadata: Mapping[str, Mapping[str, Any]],
+) -> None:
+    root = db.bundle.child("indexes")
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / _PROPERTY_INDEX_MANIFEST
+    payload = {"indexes": [dict(metadata[name]) for name in sorted(metadata)]}
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _assert_index_name(name: str, label: str) -> None:
+    if not _INDEX_NAME_RE.match(name):
+        raise CaracalError(
+            code="CDB-7090",
+            message=f"invalid {label} name: {name!r}",
+            hint="index names must match [A-Za-z_][A-Za-z0-9_.-]*",
+        )
+
+
+def _neighbors(
+    db: Database,
+    *,
+    seed_node_ids: tuple[Any, ...],
+    edge_types: tuple[str, ...],
+    direction: str,
+    depth: int,
+    limit: int | None,
+    node_type_filters: tuple[str, ...],
+    edge_filters: dict[str, Any],
+    return_paths: bool,
+    node_key_col: str,
+    weight_property: str | None,
+    top_edges_per_node: int | None,
+    path_score: str | None,
+    path_score_property: str,
+    order_by_path_score: str | None,
+) -> Result:
+    if depth < 1:
+        raise CaracalError(code="CDB-6031", message="neighbors depth must be >= 1")
+    if direction not in {"out", "in", "both"}:
+        raise CaracalError(
+            code="CDB-6020",
+            message=f"direction must be 'out', 'in', or 'both', got {direction!r}",
+        )
+    if limit is not None and limit < 0:
+        raise CaracalError(code="CDB-6020", message="neighbors limit must be >= 0")
+    if top_edges_per_node is not None and top_edges_per_node < 0:
+        raise CaracalError(code="CDB-6020", message="top_edges_per_node must be >= 0")
+    score_mode = _normalize_path_score_mode(path_score)
+    score_order = _normalize_score_order(order_by_path_score)
+    if not edge_types:
+        raise CaracalError(code="CDB-6020", message="neighbors requires at least one edge type")
+    seed_ids, _ = _resolve_graph_node_ids(db, seed_node_ids, node_key_col=node_key_col)
+    node_lookup = _node_lookup(db, node_key_col=node_key_col)
+    allowed_types = {_coerce_local_name(value, "node type filter") for value in node_type_filters}
+    adjacency = _typed_adjacency(
+        db,
+        edge_types=edge_types,
+        direction=direction,
+        filters=edge_filters,
+        order_by_property=weight_property,
+        top_per_node=top_edges_per_node,
+    )
+    rows: list[dict[str, Any]] = []
+    visited = set(seed_ids)
+    queue: list[tuple[int, int, list[int], list[dict[str, Any]]]] = [
+        (seed, 0, [seed], []) for seed in seed_ids
+    ]
+    while queue:
+        current, current_depth, path_nodes, path_edges = queue.pop(0)
+        if current_depth >= depth:
+            continue
+        for step in adjacency.get(current, []):
+            target = int(step["next"])
+            next_depth = current_depth + 1
+            next_path_nodes = [*path_nodes, target]
+            next_path_edges = [*path_edges, step]
+            if target not in visited:
+                visited.add(target)
+                node_info = node_lookup.get(target, _fallback_node_info(target))
+                if not allowed_types or node_info["node_type"] in allowed_types:
+                    rows.append(
+                        _neighbor_result_row(
+                            node_info,
+                            target,
+                            next_depth,
+                            step,
+                            next_path_nodes,
+                            next_path_edges,
+                            node_lookup,
+                            score_mode=score_mode,
+                            score_property=path_score_property,
+                            return_paths=return_paths,
+                        )
+                    )
+                    if (
+                        limit is not None
+                        and len(rows) >= limit
+                        and not (score_mode is not None and score_order is not None)
+                    ):
+                        table = _neighbors_result_table(rows, return_paths=return_paths)
+                        return Result(_table_to_batches(table))
+                queue.append((target, next_depth, next_path_nodes, next_path_edges))
+    if score_mode is not None and score_order is not None:
+        rows.sort(key=_path_score_sort_key(score_order))
+    if limit is not None:
+        rows = rows[:limit]
+    return Result(_table_to_batches(_neighbors_result_table(rows, return_paths=return_paths)))
+
+
+def _k_hop(
+    db: Database,
+    *,
+    seeds: tuple[Any, ...],
+    depth: int,
+    edge_types: tuple[str, ...],
+    direction: str,
+    max_nodes: int,
+    max_edges: int,
+    node_key_col: str,
+) -> dict[str, pa.Table]:
+    if depth < 0:
+        raise CaracalError(code="CDB-6031", message="k_hop depth must be >= 0")
+    if max_nodes < 0 or max_edges < 0:
+        raise CaracalError(code="CDB-6020", message="k_hop limits must be >= 0")
+    if direction not in {"out", "in", "both"}:
+        raise CaracalError(
+            code="CDB-6020",
+            message=f"direction must be 'out', 'in', or 'both', got {direction!r}",
+        )
+    seed_ids, _ = _resolve_graph_node_ids(db, seeds, node_key_col=node_key_col)
+    node_lookup = _node_lookup(db, node_key_col=node_key_col)
+    adjacency = _typed_adjacency(db, edge_types=edge_types, direction=direction, filters={})
+    node_depth: dict[int, int] = {seed: 0 for seed in seed_ids}
+    queue: list[tuple[int, int]] = [(seed, 0) for seed in seed_ids]
+    edge_rows: list[dict[str, Any]] = []
+    seen_edges: set[tuple[int, str]] = set()
+    while queue and len(node_depth) < max_nodes:
+        current, current_depth = queue.pop(0)
+        if current_depth >= depth:
+            continue
+        for step in adjacency.get(current, []):
+            if len(edge_rows) >= max_edges:
+                break
+            edge_key = (int(step["edge_id"]), str(step["edge_type"]))
+            if edge_key not in seen_edges:
+                seen_edges.add(edge_key)
+                edge_rows.append(_k_hop_edge_row(step, node_lookup, current_depth + 1))
+            target = int(step["next"])
+            if target not in node_depth and len(node_depth) < max_nodes:
+                node_depth[target] = current_depth + 1
+                queue.append((target, current_depth + 1))
+    node_rows = [
+        _k_hop_node_row(node_lookup.get(gid, _fallback_node_info(gid)), gid, depth_value)
+        for gid, depth_value in sorted(node_depth.items(), key=lambda item: (item[1], item[0]))
+    ]
+    return {"nodes": _k_hop_nodes_table(node_rows), "edges": _k_hop_edges_table(edge_rows)}
+
+
+def _paths(
+    db: Database,
+    *,
+    source: Any,
+    target: Any,
+    edge_types: tuple[str, ...],
+    max_depth: int,
+    limit: int,
+    direction: str,
+    edge_filters: Mapping[str, Any],
+    node_key_col: str,
+    score: str | None,
+    score_property: str,
+    order: str,
+) -> Result:
+    if max_depth < 1:
+        raise CaracalError(code="CDB-6031", message="paths max_depth must be >= 1")
+    if limit < 0:
+        raise CaracalError(code="CDB-6020", message="paths limit must be >= 0")
+    if direction not in {"out", "in", "both"}:
+        raise CaracalError(
+            code="CDB-6020",
+            message=f"direction must be 'out', 'in', or 'both', got {direction!r}",
+        )
+    score_mode = _normalize_path_score_mode(score)
+    score_order = _normalize_score_order(order)
+    source_ids, _ = _resolve_graph_node_ids(db, source, node_key_col=node_key_col)
+    target_ids, _ = _resolve_graph_node_ids(db, target, node_key_col=node_key_col)
+    rows = _enumerate_path_rows(
+        db,
+        source_id=int(source_ids[0]),
+        target_id=int(target_ids[0]),
+        edge_types=edge_types,
+        max_depth=max_depth,
+        direction=direction,
+        edge_filters=edge_filters,
+        node_key_col=node_key_col,
+        score_mode=score_mode,
+        score_property=score_property,
+    )
+    rows.sort(key=_path_result_sort_key(score_order if score_mode is not None else None))
+    rows = rows[:limit]
+    return Result(_table_to_batches(_paths_result_table(rows)))
+
+
+def _shortest_path(
+    db: Database,
+    *,
+    source: Any,
+    target: Any,
+    edge_types: tuple[str, ...],
+    max_depth: int | None,
+    direction: str,
+    edge_filters: Mapping[str, Any],
+    node_key_col: str,
+) -> dict[str, Any] | None:
+    if max_depth is not None and max_depth < 1:
+        raise CaracalError(code="CDB-6031", message="shortest_path max_depth must be >= 1")
+    bound = max_depth if max_depth is not None else max(1, _global_vertex_count(db))
+    result = _paths(
+        db,
+        source=source,
+        target=target,
+        edge_types=edge_types,
+        max_depth=bound,
+        limit=1,
+        direction=direction,
+        edge_filters=edge_filters,
+        node_key_col=node_key_col,
+        score=None,
+        score_property="weight",
+        order="asc",
+    )
+    rows = result.rows()
+    return rows[0] if rows else None
+
+
+def _enumerate_path_rows(
+    db: Database,
+    *,
+    source_id: int,
+    target_id: int,
+    edge_types: tuple[str, ...],
+    max_depth: int,
+    direction: str,
+    edge_filters: Mapping[str, Any],
+    node_key_col: str,
+    score_mode: str | None,
+    score_property: str,
+) -> list[dict[str, Any]]:
+    adjacency = _typed_adjacency(
+        db,
+        edge_types=edge_types,
+        direction=direction,
+        filters=edge_filters,
+    )
+    node_lookup = _node_lookup(db, node_key_col=node_key_col)
+    rows: list[dict[str, Any]] = []
+    queue: list[tuple[int, list[int], list[dict[str, Any]]]] = [(source_id, [source_id], [])]
+    while queue:
+        current, path_nodes, path_edges = queue.pop(0)
+        if len(path_edges) >= max_depth:
+            continue
+        for step in adjacency.get(current, []):
+            next_id = int(step["next"])
+            if next_id in path_nodes:
+                continue
+            next_nodes = [*path_nodes, next_id]
+            next_edges = [*path_edges, step]
+            if next_id == target_id:
+                rows.append(
+                    _path_result_row(
+                        next_nodes,
+                        next_edges,
+                        node_lookup,
+                        score_mode=score_mode,
+                        score_property=score_property,
+                    )
+                )
+            if len(next_edges) < max_depth:
+                queue.append((next_id, next_nodes, next_edges))
+    return rows
+
+
+def _path_result_row(
+    path_nodes: list[int],
+    path_edges: list[Mapping[str, Any]],
+    node_lookup: Mapping[int, Mapping[str, Any]],
+    *,
+    score_mode: str | None,
+    score_property: str,
+) -> dict[str, Any]:
+    node_ids = [
+        str(node_lookup.get(node, _fallback_node_info(node))["node_id"]) for node in path_nodes
+    ]
+    return {
+        "source": node_ids[0],
+        "target": node_ids[-1],
+        "depth": len(path_edges),
+        "node_ids": node_ids,
+        "internal_node_ids": path_nodes,
+        "edge_ids": [int(edge["edge_id"]) for edge in path_edges],
+        "relation_types": [str(edge["edge_type"]) for edge in path_edges],
+        "directions": [str(edge["direction"]) for edge in path_edges],
+        "edge_properties": [
+            json.dumps(edge.get("properties", {}), sort_keys=True, default=str)
+            for edge in path_edges
+        ],
+        "path_score": _path_score(path_edges, mode=score_mode, property_name=score_property),
+    }
+
+
+def _paths_result_table(rows: list[dict[str, Any]]) -> pa.Table:
+    schema = pa.schema(
+        [
+            pa.field("source", pa.string()),
+            pa.field("target", pa.string()),
+            pa.field("depth", pa.uint64()),
+            pa.field("node_ids", pa.list_(pa.string())),
+            pa.field("internal_node_ids", pa.list_(pa.uint64())),
+            pa.field("edge_ids", pa.list_(pa.uint64())),
+            pa.field("relation_types", pa.list_(pa.string())),
+            pa.field("directions", pa.list_(pa.string())),
+            pa.field("edge_properties", pa.list_(pa.string())),
+            pa.field("path_score", pa.float64()),
+        ]
+    )
+    if not rows:
+        return pa.Table.from_batches([], schema=schema)
+    return pa.table(
+        [
+            pa.array([row["source"] for row in rows], type=pa.string()),
+            pa.array([row["target"] for row in rows], type=pa.string()),
+            pa.array([row["depth"] for row in rows], type=pa.uint64()),
+            pa.array([row["node_ids"] for row in rows], type=pa.list_(pa.string())),
+            pa.array([row["internal_node_ids"] for row in rows], type=pa.list_(pa.uint64())),
+            pa.array([row["edge_ids"] for row in rows], type=pa.list_(pa.uint64())),
+            pa.array([row["relation_types"] for row in rows], type=pa.list_(pa.string())),
+            pa.array([row["directions"] for row in rows], type=pa.list_(pa.string())),
+            pa.array([row["edge_properties"] for row in rows], type=pa.list_(pa.string())),
+            pa.array([row["path_score"] for row in rows], type=pa.float64()),
+        ],
+        schema=schema,
+    )
+
+
+def _normalize_path_score_mode(mode: str | None) -> str | None:
+    if mode is None:
+        return None
+    normalized = mode.lower()
+    if normalized not in {"sum", "average", "avg", "min", "max", "product"}:
+        raise CaracalError(
+            code="CDB-6020",
+            message=f"unsupported path score aggregation: {mode!r}",
+        )
+    return "average" if normalized == "avg" else normalized
+
+
+def _normalize_score_order(order: str | None) -> str | None:
+    if order is None:
+        return None
+    normalized = order.lower()
+    if normalized not in {"asc", "desc"}:
+        raise CaracalError(code="CDB-6020", message=f"score order must be asc or desc: {order!r}")
+    return normalized
+
+
+def _path_score(
+    path_edges: list[Mapping[str, Any]],
+    *,
+    mode: str | None,
+    property_name: str,
+) -> float | None:
+    if mode is None:
+        return None
+    weights = [_edge_numeric_property(edge, property_name) for edge in path_edges]
+    if not weights:
+        return None
+    if mode == "sum":
+        return float(sum(weights))
+    if mode == "average":
+        return float(sum(weights) / len(weights))
+    if mode == "min":
+        return float(min(weights))
+    if mode == "max":
+        return float(max(weights))
+    if mode == "product":
+        product = 1.0
+        for weight in weights:
+            product *= weight
+        return float(product)
+    raise CaracalError(code="CDB-6020", message=f"unsupported path score aggregation: {mode!r}")
+
+
+def _path_result_sort_key(order: str | None):
+    def _key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+        score = row.get("path_score")
+        score_value = float(score) if score is not None else 0.0
+        if order is None:
+            return (int(row["depth"]), tuple(row["internal_node_ids"]), tuple(row["edge_ids"]))
+        ordered_score = score_value if order == "asc" else -score_value
+        return (
+            ordered_score,
+            int(row["depth"]),
+            tuple(row["internal_node_ids"]),
+            tuple(row["edge_ids"]),
+        )
+
+    return _key
+
+
+def _path_score_sort_key(order: str):
+    def _key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+        score = row.get("path_score")
+        score_value = float(score) if score is not None else 0.0
+        ordered_score = score_value if order == "asc" else -score_value
+        return (ordered_score, int(row["depth"]), int(row["internal_id"]))
+
+    return _key
+
+
+def _typed_adjacency(
+    db: Database,
+    *,
+    edge_types: tuple[str, ...],
+    direction: str,
+    filters: Mapping[str, Any],
+    order_by_property: str | None = None,
+    top_per_node: int | None = None,
+) -> dict[int, list[dict[str, Any]]]:
+    adjacency: dict[int, list[dict[str, Any]]] = {}
+    for relation in edge_types:
+        prop = _find_property_by_local_name(db, relation)
+        if prop is None:
+            raise CaracalError(code="CDB-6023", message=f"edge type not found: {relation!r}")
+        store = open_edge_store(
+            db.bundle,
+            property_iri=prop.iri,
+            local_name=prop.local_name or _local(prop.iri),
+        )
+        for row in store.to_table().to_pylist():
+            if not _edge_row_matches_filters(row, filters):
+                continue
+            src = int(row["src"])
+            dst = int(row["dst"])
+            base = {
+                "edge_id": int(row["eid"]),
+                "edge_type": relation,
+                "src": src,
+                "dst": dst,
+                "properties": {
+                    key: value
+                    for key, value in row.items()
+                    if key not in {"eid", "src", "dst", "_created_lsn", "_deleted_lsn"}
+                },
+            }
+            if direction in {"out", "both"}:
+                adjacency.setdefault(src, []).append({**base, "next": dst, "direction": "out"})
+            if direction in {"in", "both"}:
+                adjacency.setdefault(dst, []).append({**base, "next": src, "direction": "in"})
+    for node_id, steps in list(adjacency.items()):
+        if order_by_property is None:
+            steps.sort(
+                key=lambda item: (str(item["edge_type"]), int(item["edge_id"]), int(item["next"]))
+            )
+        else:
+            steps.sort(
+                key=lambda item: (
+                    -_edge_numeric_property(item, order_by_property),
+                    str(item["edge_type"]),
+                    int(item["edge_id"]),
+                    int(item["next"]),
+                )
+            )
+        if top_per_node is not None:
+            adjacency[node_id] = steps[:top_per_node]
+    return adjacency
+
+
+def _edge_row_matches_filters(row: Mapping[str, Any], filters: Mapping[str, Any]) -> bool:
+    for raw_key, expected in filters.items():
+        key = str(raw_key)
+        if key.endswith("_gte"):
+            if not _numeric_compare(row.get(key[:-4]), expected, "ge"):
+                return False
+        elif key.endswith("_lte"):
+            if not _numeric_compare(row.get(key[:-4]), expected, "le"):
+                return False
+        elif key.endswith("_gt"):
+            if not _numeric_compare(row.get(key[:-3]), expected, "gt"):
+                return False
+        elif key.endswith("_lt"):
+            if not _numeric_compare(row.get(key[:-3]), expected, "lt"):
+                return False
+        elif key.endswith("_eq"):
+            if row.get(key[:-3]) != expected:
+                return False
+        elif row.get(key) != expected:
+            return False
+    return True
+
+
+def _edge_numeric_property(edge: Mapping[str, Any], property_name: str) -> float:
+    props = edge.get("properties", {})
+    if not isinstance(props, Mapping):
+        return 0.0
+    value = props.get(property_name)
+    if value is None:
+        return 0.0
+    return float(value)
+
+
+def _numeric_compare(value: Any, expected: Any, op: str) -> bool:
+    if value is None:
+        return False
+    left = float(value)
+    right = float(expected)
+    if op == "ge":
+        return left >= right
+    if op == "le":
+        return left <= right
+    if op == "gt":
+        return left > right
+    if op == "lt":
+        return left < right
+    return False
+
+
+def _node_lookup(db: Database, *, node_key_col: str = "node_id") -> dict[int, dict[str, Any]]:
+    lookup: dict[int, dict[str, Any]] = {}
+    for class_name in list_node_stores(db.bundle):
+        cls = db._find_class(class_name)
+        store = open_node_store(
+            db.bundle,
+            class_iri=cls.iri,
+            local_name=cls.local_name or _local(cls.iri),
+        )
+        for row in store.to_table().to_pylist():
+            gid = int(row.get(_INTERNAL_GID_COLUMN, row["nid"]))
+            lookup[gid] = {
+                "node_id": row.get(node_key_col, gid),
+                "node_type": class_name,
+                "row": row,
+            }
+    return lookup
+
+
+def _fallback_node_info(gid: int) -> dict[str, Any]:
+    return {"node_id": gid, "node_type": None, "row": {}}
+
+
+def _neighbor_result_row(
+    node_info: Mapping[str, Any],
+    internal_id: int,
+    depth: int,
+    step: Mapping[str, Any],
+    path_nodes: list[int],
+    path_edges: list[Mapping[str, Any]],
+    node_lookup: Mapping[int, Mapping[str, Any]],
+    *,
+    score_mode: str | None,
+    score_property: str,
+    return_paths: bool,
+) -> dict[str, Any]:
+    row = {
+        "node_id": node_info["node_id"],
+        "node_type": node_info["node_type"],
+        "internal_id": internal_id,
+        "depth": depth,
+        "via_edge_id": int(step["edge_id"]),
+        "via_edge_type": step["edge_type"],
+        "path_score": _path_score(path_edges, mode=score_mode, property_name=score_property),
+    }
+    if return_paths:
+        row["path_node_ids"] = [
+            str(node_lookup.get(node, _fallback_node_info(node))["node_id"]) for node in path_nodes
+        ]
+        row["path_edge_ids"] = [int(edge["edge_id"]) for edge in path_edges]
+        row["path_edge_types"] = [str(edge["edge_type"]) for edge in path_edges]
+    return row
+
+
+def _neighbors_result_table(rows: list[dict[str, Any]], *, return_paths: bool) -> pa.Table:
+    fields = [
+        pa.field("node_id", pa.string()),
+        pa.field("node_type", pa.string()),
+        pa.field("internal_id", pa.uint64()),
+        pa.field("depth", pa.uint64()),
+        pa.field("via_edge_id", pa.uint64()),
+        pa.field("via_edge_type", pa.string()),
+        pa.field("path_score", pa.float64()),
+    ]
+    if return_paths:
+        fields.extend(
+            [
+                pa.field("path_node_ids", pa.list_(pa.string())),
+                pa.field("path_edge_ids", pa.list_(pa.uint64())),
+                pa.field("path_edge_types", pa.list_(pa.string())),
+            ]
+        )
+    schema = pa.schema(fields)
+    if not rows:
+        return pa.Table.from_batches([], schema=schema)
+    arrays = [
+        pa.array([str(row["node_id"]) for row in rows], type=pa.string()),
+        pa.array([row["node_type"] for row in rows], type=pa.string()),
+        pa.array([row["internal_id"] for row in rows], type=pa.uint64()),
+        pa.array([row["depth"] for row in rows], type=pa.uint64()),
+        pa.array([row["via_edge_id"] for row in rows], type=pa.uint64()),
+        pa.array([row["via_edge_type"] for row in rows], type=pa.string()),
+        pa.array([row["path_score"] for row in rows], type=pa.float64()),
+    ]
+    if return_paths:
+        arrays.extend(
+            [
+                pa.array([row["path_node_ids"] for row in rows], type=pa.list_(pa.string())),
+                pa.array([row["path_edge_ids"] for row in rows], type=pa.list_(pa.uint64())),
+                pa.array([row["path_edge_types"] for row in rows], type=pa.list_(pa.string())),
+            ]
+        )
+    return pa.table(arrays, schema=schema)
+
+
+def _k_hop_node_row(node_info: Mapping[str, Any], internal_id: int, depth: int) -> dict[str, Any]:
+    return {
+        "node_id": node_info["node_id"],
+        "node_type": node_info["node_type"],
+        "internal_id": internal_id,
+        "depth": depth,
+    }
+
+
+def _k_hop_edge_row(
+    step: Mapping[str, Any],
+    node_lookup: Mapping[int, Mapping[str, Any]],
+    depth: int,
+) -> dict[str, Any]:
+    src = int(step["src"])
+    dst = int(step["dst"])
+    return {
+        "edge_id": int(step["edge_id"]),
+        "edge_type": step["edge_type"],
+        "src": node_lookup.get(src, _fallback_node_info(src))["node_id"],
+        "dst": node_lookup.get(dst, _fallback_node_info(dst))["node_id"],
+        "src_internal_id": src,
+        "dst_internal_id": dst,
+        "direction": step["direction"],
+        "depth": depth,
+    }
+
+
+def _k_hop_nodes_table(rows: list[dict[str, Any]]) -> pa.Table:
+    schema = pa.schema(
+        [
+            pa.field("node_id", pa.string()),
+            pa.field("node_type", pa.string()),
+            pa.field("internal_id", pa.uint64()),
+            pa.field("depth", pa.uint64()),
+        ]
+    )
+    if not rows:
+        return pa.Table.from_batches([], schema=schema)
+    return pa.table(
+        [
+            pa.array([str(row["node_id"]) for row in rows], type=pa.string()),
+            pa.array([row["node_type"] for row in rows], type=pa.string()),
+            pa.array([row["internal_id"] for row in rows], type=pa.uint64()),
+            pa.array([row["depth"] for row in rows], type=pa.uint64()),
+        ],
+        schema=schema,
+    )
+
+
+def _k_hop_edges_table(rows: list[dict[str, Any]]) -> pa.Table:
+    schema = pa.schema(
+        [
+            pa.field("edge_id", pa.uint64()),
+            pa.field("edge_type", pa.string()),
+            pa.field("src", pa.string()),
+            pa.field("dst", pa.string()),
+            pa.field("src_internal_id", pa.uint64()),
+            pa.field("dst_internal_id", pa.uint64()),
+            pa.field("direction", pa.string()),
+            pa.field("depth", pa.uint64()),
+        ]
+    )
+    if not rows:
+        return pa.Table.from_batches([], schema=schema)
+    return pa.table(
+        [
+            pa.array([row["edge_id"] for row in rows], type=pa.uint64()),
+            pa.array([row["edge_type"] for row in rows], type=pa.string()),
+            pa.array([str(row["src"]) for row in rows], type=pa.string()),
+            pa.array([str(row["dst"]) for row in rows], type=pa.string()),
+            pa.array([row["src_internal_id"] for row in rows], type=pa.uint64()),
+            pa.array([row["dst_internal_id"] for row in rows], type=pa.uint64()),
+            pa.array([row["direction"] for row in rows], type=pa.string()),
+            pa.array([row["depth"] for row in rows], type=pa.uint64()),
+        ],
+        schema=schema,
+    )
+
+
+def _table_to_batches(table: pa.Table) -> list[pa.RecordBatch]:
+    if table.num_rows:
+        return table.combine_chunks().to_batches()
+    arrays = [pa.array([], type=field.type) for field in table.schema]
+    return [pa.RecordBatch.from_arrays(arrays, schema=table.schema)]
+
+
+def _compile_sql_operator(
+    db: Database,
+    text: str,
+) -> tuple[Any, SnapshotId | None, int | None, str]:
+    program = parse_tuft(text)
+    try:
+        bind_program(program, db.catalog)
+    except CaracalError as exc:
+        if exc.code not in {"TF-3001", "TF-3004"}:
+            raise
+    if len(program.statements) != 1 or not isinstance(program.statements[0], ta.QueryStmt):
+        raise CaracalError(code="CDB-6020", message="profile/explain supports one query statement")
+    query = program.statements[0].query
+    assert query is not None
+    if _is_multi_element_pattern(query):
+        plan = _compile_pattern_query(query, db)
+        return _build_pattern_pipeline(plan, db), plan.snapshot, plan.limit, "pattern_match"
+    plan = _compile_query(query, db)
+    return _build_pipeline(plan, db), plan.snapshot, plan.limit, "node_match"
+
+
+def _profile_query(db: Database, text: str) -> dict[str, Any]:
+    if text.strip().upper().startswith("CALL VECTOR.SEARCH"):
+        return _profile_vector_search_call(db, text.strip())
+    program = parse_tuft(text)
+    query = _single_query_statement(program, "profile")
+    if _has_variable_length_pattern(query):
+        start = time.perf_counter()
+        result = _execute_variable_length_pattern_query(db, query)
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        count = result.arrow().num_rows
+        return {
+            "logical_plan": "variable_length_path",
+            "physical_plan": "VariableLengthPath",
+            "indexes_used": [],
+            "vector_index_used": None,
+            "node_rows_scanned": 0,
+            "edge_rows_scanned": 0,
+            "candidate_count": count,
+            "result_count": count,
+            "elapsed_ms": elapsed_ms,
+            "operator_timings": [
+                {
+                    "name": "VariableLengthPath",
+                    "rows": count,
+                    "batches": len(list(result.record_batches())),
+                    "elapsed_ms": elapsed_ms,
+                    "peak_bytes": 0,
+                }
+            ],
+            "fallback_flags": [],
+        }
+    start = time.perf_counter()
+    op, snapshot, limit, logical = _compile_sql_operator(db, text)
+    ctx = apply_as_of(ExecCtx(), snapshot)
+    iterator, report = profile_pipeline(op, ctx)
+    batches = list(iterator)
+    if limit is not None:
+        batches = _apply_limit(batches, limit)
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    result_count = sum(batch.num_rows for batch in batches)
+    return {
+        "logical_plan": logical,
+        "physical_plan": op.name,
+        "indexes_used": [],
+        "vector_index_used": None,
+        "node_rows_scanned": _profile_rows(report, "NodeScan"),
+        "edge_rows_scanned": _profile_rows(report, "Expand"),
+        "candidate_count": result_count,
+        "result_count": result_count,
+        "elapsed_ms": elapsed_ms,
+        "operator_timings": [
+            {
+                "name": item.name,
+                "rows": item.rows,
+                "batches": item.batches,
+                "elapsed_ms": item.elapsed_ms,
+                "peak_bytes": item.peak_bytes,
+            }
+            for item in report.operators
+        ],
+        "fallback_flags": [],
+    }
+
+
+def _explain_query(db: Database, text: str) -> dict[str, Any]:
+    if text.strip().upper().startswith("CALL VECTOR.SEARCH"):
+        return _explain_vector_search_call(db, text.strip())
+    program = parse_tuft(text)
+    query = _single_query_statement(program, "explain")
+    if _has_variable_length_pattern(query):
+        return {
+            "logical_plan": "variable_length_path",
+            "physical_plan": "VariableLengthPath",
+            "indexes_used": [],
+            "vector_index_used": None,
+            "limit": _eval_int_literal(query.modifiers.limit, "LIMIT")
+            if query.modifiers.limit is not None
+            else None,
+            "fallback_flags": [],
+        }
+    op, _snapshot, limit, logical = _compile_sql_operator(db, text)
+    return {
+        "logical_plan": logical,
+        "physical_plan": op.name,
+        "indexes_used": [],
+        "vector_index_used": None,
+        "limit": limit,
+        "fallback_flags": [],
+    }
+
+
+def _profile_rows(report: Any, name: str) -> int:
+    return sum(item.rows for item in report.operators if item.name == name)
+
+
+def _single_query_statement(program: ta.Program, label: str) -> ta.Query:
+    if len(program.statements) != 1 or not isinstance(program.statements[0], ta.QueryStmt):
+        raise CaracalError(code="CDB-6020", message=f"{label} supports one query statement")
+    query = program.statements[0].query
+    assert query is not None
+    return query
+
+
 # ---------------------------------------------------------------------------
 # Query → plan
 # ---------------------------------------------------------------------------
@@ -1341,6 +3380,10 @@ def _translate_expr(expr: ta.Expr | None, alias: str) -> object:
         return ("col", expr.name.name)
     if isinstance(expr, ta.Literal):
         return ("lit", expr.value)
+    if isinstance(expr, ta.ListExpr):
+        return ("lit", [_literal_expr_value(item) for item in expr.items])
+    if isinstance(expr, ta.FnCall):
+        return _compile_scalar_fncall(expr, {alias})
     if isinstance(expr, ta.BinOp):
         op = _BIN_OP_TO_TUPLE.get(expr.op)
         if op is None:
@@ -1353,6 +3396,58 @@ def _translate_expr(expr: ta.Expr | None, alias: str) -> object:
     raise CaracalError(
         code="CDB-6020", message=f"unsupported expression node: {type(expr).__name__}"
     )
+
+
+def _literal_expr_value(expr: ta.Expr) -> Any:
+    if isinstance(expr, ta.Literal):
+        return expr.value
+    if isinstance(expr, ta.ListExpr):
+        return [_literal_expr_value(item) for item in expr.items]
+    raise CaracalError(code="CDB-6020", message="list literals in expressions must be constant")
+
+
+def _compile_scalar_fncall(expr: ta.FnCall, aliases: set[str]) -> object:
+    fn_name = _fn_name(expr.name)
+    if fn_name not in {"cosine_similarity", "cosine_distance", "dot_product", "l2_distance"}:
+        raise CaracalError(code="CDB-6020", message=f"unsupported function call: {fn_name!r}")
+    if len(expr.args) != 2:
+        raise CaracalError(code="CDB-6020", message=f"{fn_name}() takes exactly two arguments")
+    from caracaldb.lang.builtins import VECTOR_FUNCTIONS
+
+    fn = VECTOR_FUNCTIONS[fn_name].dispatch
+    return (
+        "py_binary",
+        lambda left, right, _fn=fn: _fn([left, right]),
+        _walk_scalar_fn_arg(expr.args[0], aliases),
+        _walk_scalar_fn_arg(expr.args[1], aliases),
+    )
+
+
+def _walk_scalar_fn_arg(expr: ta.Expr, aliases: set[str]) -> object:
+    if isinstance(expr, ta.PathExpr):
+        if expr.root is None or len(expr.steps) != 1:
+            raise CaracalError(code="CDB-6020", message="function args require alias.field")
+        if expr.root.name not in aliases:
+            raise CaracalError(code="CDB-6020", message=f"unbound variable: {expr.root.name!r}")
+        return ("col", expr.steps[0].name)
+    if isinstance(expr, ta.Literal):
+        return ("lit", expr.value)
+    if isinstance(expr, ta.ListExpr):
+        return ("lit", [_literal_expr_value(item) for item in expr.items])
+    raise CaracalError(
+        code="CDB-6020",
+        message=f"unsupported function argument: {type(expr).__name__}",
+    )
+
+
+def _fn_name(name: ta.NameRef | ta.Ident | None) -> str:
+    if isinstance(name, ta.Ident):
+        return name.name
+    if isinstance(name, ta.QName):
+        return name.value.rsplit(":", 1)[-1]
+    if isinstance(name, ta.Iri):
+        return _local(name.value)
+    raise CaracalError(code="CDB-6020", message="function call is missing a name")
 
 
 def _extract_subclassof_predicate(
@@ -1507,6 +3602,370 @@ class _PatternPlan:
     limit: int | None
     id_column: str  # "_cdb_gid" or "nid"
     snapshot: SnapshotId | None = None
+
+
+def _has_variable_length_pattern(query: ta.Query) -> bool:
+    match_clause = next((c for c in query.clauses if isinstance(c, ta.MatchClause)), None)
+    if match_clause is None:
+        return False
+    for pattern in match_clause.patterns:
+        for elem in pattern.elements:
+            if isinstance(elem, ta.RelPattern) and (
+                elem.hop_range.min_hops is not None or elem.hop_range.max_hops is not None
+            ):
+                return True
+    return False
+
+
+def _execute_variable_length_pattern_query(db: Database, query: ta.Query) -> Result:
+    spec = _compile_variable_length_pattern(query, db)
+    source_rows = _candidate_rows_for_node_pattern(db, spec["source_node"], query)
+    target_rows = _candidate_rows_for_node_pattern(db, spec["target_node"], query)
+    target_ids = {int(row["_internal_id"]) for row in target_rows}
+    target_by_id = {int(row["_internal_id"]): row for row in target_rows}
+    source_alias = spec["source_alias"]
+    target_alias = spec["target_alias"]
+    binding = spec["binding"]
+    adjacency = _typed_adjacency(
+        db,
+        edge_types=spec["edge_types"],
+        direction=spec["direction"],
+        filters=spec["edge_filters"],
+    )
+    node_lookup = _node_lookup(db)
+    rows: list[dict[str, Any]] = []
+    for source_row in source_rows:
+        source_id = int(source_row["_internal_id"])
+        for path in _enumerate_paths_to_targets(
+            source_id=source_id,
+            target_ids=target_ids,
+            adjacency=adjacency,
+            min_depth=spec["min_depth"],
+            max_depth=spec["max_depth"],
+            node_lookup=node_lookup,
+        ):
+            target_row = target_by_id[int(path["internal_node_ids"][-1])]
+            context = {
+                source_alias: source_row,
+                target_alias: target_row,
+                binding: path,
+            }
+            if spec["where"] is not None and not _eval_var_path_expr(spec["where"], context):
+                continue
+            rows.append(_project_var_path_row(spec["projections"], context))
+    table = _variable_path_result_table(spec["projections"], rows)
+    batches = _apply_modifiers(_table_to_batches(table), query.modifiers)
+    return Result(batches)
+
+
+def _compile_variable_length_pattern(query: ta.Query, db: Database) -> dict[str, Any]:
+    match_clause = next((c for c in query.clauses if isinstance(c, ta.MatchClause)), None)
+    return_clause = next((c for c in query.clauses if isinstance(c, ta.ReturnClause)), None)
+    where_clause = next((c for c in query.clauses if isinstance(c, ta.WhereClause)), None)
+    if match_clause is None or return_clause is None:
+        raise CaracalError(code="CDB-6020", message="variable-length MATCH requires RETURN")
+    if len(match_clause.patterns) != 1:
+        raise CaracalError(
+            code="CDB-6020",
+            message="variable-length MATCH currently supports exactly one path pattern",
+        )
+    pattern = match_clause.patterns[0]
+    elements = list(pattern.elements)
+    if len(elements) != 3 or not isinstance(elements[0], ta.NodePattern):
+        raise CaracalError(
+            code="CDB-6020",
+            message="variable-length MATCH requires (a:Type)-[:REL*min..max]->(b:Type)",
+        )
+    rel = elements[1]
+    target_node = elements[2]
+    if not isinstance(rel, ta.RelPattern) or not isinstance(target_node, ta.NodePattern):
+        raise CaracalError(
+            code="CDB-6020",
+            message="variable-length MATCH requires one relationship between two nodes",
+        )
+    if not rel.types:
+        raise CaracalError(code="CDB-6020", message="variable-length rel requires a type")
+    edge_types = tuple(_relation_local(rel_label, query) for rel_label in rel.types)
+    min_depth = 1 if rel.hop_range.min_hops is None else int(rel.hop_range.min_hops)
+    max_depth = rel.hop_range.max_hops
+    if max_depth is None:
+        max_depth = max(1, _global_vertex_count(db))
+    max_depth = int(max_depth)
+    if min_depth < 0 or max_depth < min_depth:
+        raise CaracalError(
+            code="CDB-6031",
+            message=f"invalid variable path range: {min_depth}..{max_depth}",
+        )
+    source_alias = elements[0].var.name if elements[0].var is not None else "a"
+    target_alias = target_node.var.name if target_node.var is not None else "b"
+    binding = pattern.binding.name if pattern.binding is not None else "path"
+    direction = rel.direction.value
+    edge_filters = _prop_map_filters(rel.props)
+    projections = tuple(
+        _compile_var_path_projection(proj, binding, {source_alias, target_alias})
+        for proj in return_clause.projections
+    )
+    return {
+        "source_node": elements[0],
+        "target_node": target_node,
+        "source_alias": source_alias,
+        "target_alias": target_alias,
+        "binding": binding,
+        "edge_types": edge_types,
+        "direction": direction,
+        "min_depth": min_depth,
+        "max_depth": max_depth,
+        "edge_filters": edge_filters,
+        "where": where_clause.predicate if where_clause is not None else None,
+        "projections": projections,
+    }
+
+
+def _candidate_rows_for_node_pattern(
+    db: Database,
+    node: ta.NodePattern,
+    query: ta.Query,
+) -> list[dict[str, Any]]:
+    cls = _resolve_pattern_class(db, node, query)
+    table = _node_table_for_local(db, cls.local_name or _local(cls.iri))
+    filters = _prop_map_filters(node.props)
+    out: list[dict[str, Any]] = []
+    for row in table.to_pylist():
+        if not _row_matches_filters(row, filters):
+            continue
+        clean = dict(row)
+        clean["_internal_id"] = int(row.get(_INTERNAL_GID_COLUMN, row["nid"]))
+        clean["_node_type"] = cls.local_name or _local(cls.iri)
+        out.append(clean)
+    out.sort(key=lambda item: int(item["_internal_id"]))
+    return out
+
+
+def _prop_map_filters(props: ta.PropMap | None) -> dict[str, Any]:
+    if props is None:
+        return {}
+    filters: dict[str, Any] = {}
+    for entry in props.entries:
+        if not isinstance(entry.value, ta.Literal):
+            raise CaracalError(
+                code="CDB-6020",
+                message="variable-length pattern property maps require literal values",
+            )
+        filters[entry.key.name] = entry.value.value
+    return filters
+
+
+def _relation_local(rel_label: ta.NameRef, query: ta.Query) -> str:
+    iri = rel_label.value if isinstance(rel_label, ta.Iri) else _expand(rel_label, query)
+    return _local(iri) if iri.startswith("http") else iri
+
+
+def _enumerate_paths_to_targets(
+    *,
+    source_id: int,
+    target_ids: set[int],
+    adjacency: Mapping[int, list[dict[str, Any]]],
+    min_depth: int,
+    max_depth: int,
+    node_lookup: Mapping[int, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    queue: list[tuple[int, list[int], list[dict[str, Any]]]] = [(source_id, [source_id], [])]
+    while queue:
+        current, path_nodes, path_edges = queue.pop(0)
+        if len(path_edges) >= max_depth:
+            continue
+        for step in adjacency.get(current, []):
+            next_id = int(step["next"])
+            if next_id in path_nodes:
+                continue
+            next_nodes = [*path_nodes, next_id]
+            next_edges = [*path_edges, step]
+            depth = len(next_edges)
+            if depth >= min_depth and next_id in target_ids:
+                rows.append(
+                    _path_result_row(
+                        next_nodes,
+                        next_edges,
+                        node_lookup,
+                        score_mode=None,
+                        score_property="weight",
+                    )
+                )
+            if depth < max_depth:
+                queue.append((next_id, next_nodes, next_edges))
+    rows.sort(
+        key=lambda row: (
+            int(row["depth"]),
+            tuple(row["internal_node_ids"]),
+            tuple(row["edge_ids"]),
+        )
+    )
+    return rows
+
+
+def _compile_var_path_projection(
+    proj: ta.Projection,
+    binding: str,
+    node_aliases: set[str],
+) -> dict[str, Any]:
+    out_name = proj.alias.name if proj.alias is not None else _default_var_path_alias(proj.expr)
+    expr = proj.expr
+    if isinstance(expr, ta.Var) and expr.name is not None:
+        if expr.name.name == binding:
+            return {"kind": "path", "name": out_name, "binding": binding}
+        if expr.name.name in node_aliases:
+            return {"kind": "node_id", "name": out_name, "alias": expr.name.name}
+    if (
+        isinstance(expr, ta.PathExpr)
+        and expr.root is not None
+        and len(expr.steps) == 1
+        and expr.root.name in node_aliases
+    ):
+        return {
+            "kind": "property",
+            "name": out_name,
+            "alias": expr.root.name,
+            "property": expr.steps[0].name,
+        }
+    if (
+        isinstance(expr, ta.FnCall)
+        and _fn_name(expr.name) == "length"
+        and len(expr.args) == 1
+        and isinstance(expr.args[0], ta.Var)
+        and expr.args[0].name is not None
+        and expr.args[0].name.name == binding
+    ):
+        return {"kind": "length", "name": out_name, "binding": binding}
+    if isinstance(expr, ta.Literal):
+        return {"kind": "literal", "name": out_name, "value": expr.value}
+    raise CaracalError(
+        code="CDB-6020",
+        message="unsupported variable-length path RETURN expression",
+    )
+
+
+def _default_var_path_alias(expr: ta.Expr) -> str:
+    if isinstance(expr, ta.Var) and expr.name is not None:
+        return expr.name.name
+    if isinstance(expr, ta.PathExpr) and expr.root is not None and len(expr.steps) == 1:
+        return expr.steps[0].name
+    if isinstance(expr, ta.FnCall) and _fn_name(expr.name) == "length":
+        return "length"
+    return "expr"
+
+
+def _project_var_path_row(
+    projections: tuple[dict[str, Any], ...],
+    context: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    row: dict[str, Any] = {}
+    for projection in projections:
+        kind = projection["kind"]
+        name = projection["name"]
+        if kind == "path":
+            row[name] = _path_object(context[projection["binding"]])
+        elif kind == "length":
+            row[name] = int(context[projection["binding"]]["depth"])
+        elif kind == "property":
+            row[name] = context[projection["alias"]].get(projection["property"])
+        elif kind == "node_id":
+            node = context[projection["alias"]]
+            row[name] = node.get("node_id", node.get("_internal_id"))
+        elif kind == "literal":
+            row[name] = projection["value"]
+    return row
+
+
+def _path_object(path: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "depth": int(path["depth"]),
+        "node_ids": list(path["node_ids"]),
+        "internal_node_ids": list(path["internal_node_ids"]),
+        "edge_ids": list(path["edge_ids"]),
+        "relation_types": list(path["relation_types"]),
+        "directions": list(path["directions"]),
+        "edge_properties": list(path["edge_properties"]),
+    }
+
+
+def _variable_path_result_table(
+    projections: tuple[dict[str, Any], ...],
+    rows: list[dict[str, Any]],
+) -> pa.Table:
+    if rows:
+        return pa.Table.from_pylist(rows)
+    fields: list[pa.Field] = []
+    for projection in projections:
+        name = projection["name"]
+        if projection["kind"] == "path":
+            fields.append(pa.field(name, _path_struct_type()))
+        elif projection["kind"] == "length":
+            fields.append(pa.field(name, pa.uint64()))
+        else:
+            fields.append(pa.field(name, pa.null()))
+    return pa.Table.from_batches([], schema=pa.schema(fields))
+
+
+def _path_struct_type() -> pa.StructType:
+    return pa.struct(
+        [
+            pa.field("depth", pa.uint64()),
+            pa.field("node_ids", pa.list_(pa.string())),
+            pa.field("internal_node_ids", pa.list_(pa.uint64())),
+            pa.field("edge_ids", pa.list_(pa.uint64())),
+            pa.field("relation_types", pa.list_(pa.string())),
+            pa.field("directions", pa.list_(pa.string())),
+            pa.field("edge_properties", pa.list_(pa.string())),
+        ]
+    )
+
+
+def _eval_var_path_expr(expr: ta.Expr, context: Mapping[str, Mapping[str, Any]]) -> bool:
+    value = _eval_var_path_value(expr, context)
+    return bool(value)
+
+
+def _eval_var_path_value(expr: ta.Expr, context: Mapping[str, Mapping[str, Any]]) -> Any:
+    if isinstance(expr, ta.Literal):
+        return expr.value
+    if isinstance(expr, ta.PathExpr) and expr.root is not None and len(expr.steps) == 1:
+        if expr.root.name not in context:
+            raise CaracalError(code="CDB-6020", message=f"unbound variable: {expr.root.name!r}")
+        return context[expr.root.name].get(expr.steps[0].name)
+    if isinstance(expr, ta.Var) and expr.name is not None:
+        return context.get(expr.name.name)
+    if isinstance(expr, ta.FnCall) and _fn_name(expr.name) == "length":
+        if len(expr.args) != 1 or not isinstance(expr.args[0], ta.Var) or expr.args[0].name is None:
+            raise CaracalError(code="CDB-6020", message="length() requires a path variable")
+        return int(context[expr.args[0].name.name]["depth"])
+    if isinstance(expr, ta.BinOp):
+        left = _eval_var_path_value(expr.left, context)
+        right = _eval_var_path_value(expr.right, context)
+        op = _BIN_OP_TO_TUPLE.get(expr.op)
+        if op == "eq":
+            return left == right
+        if op == "ne":
+            return left != right
+        if op == "lt":
+            return left < right
+        if op == "le":
+            return left <= right
+        if op == "gt":
+            return left > right
+        if op == "ge":
+            return left >= right
+        if op == "and":
+            return bool(left) and bool(right)
+        if op == "or":
+            return bool(left) or bool(right)
+        raise CaracalError(code="CDB-6020", message=f"unsupported operator: {expr.op}")
+    if isinstance(expr, ta.UnaryOp) and expr.op.lower() in {"not", "!"}:
+        return not bool(_eval_var_path_value(expr.operand, context))
+    raise CaracalError(
+        code="CDB-6020",
+        message=f"unsupported variable-length path predicate: {type(expr).__name__}",
+    )
 
 
 def _compile_pattern_query(query: ta.Query, db: Database) -> _PatternPlan:
@@ -2299,6 +4758,44 @@ def _apply_limit(batches: list[pa.RecordBatch], limit: int) -> list[pa.RecordBat
     return out
 
 
+def _apply_modifiers(
+    batches: list[pa.RecordBatch],
+    modifiers: ta.Modifiers,
+) -> list[pa.RecordBatch]:
+    if not batches:
+        return batches
+    table = pa.Table.from_batches(batches)
+    if modifiers.order_by:
+        rows = table.to_pylist()
+        for item in reversed(modifiers.order_by):
+            column = _order_column_name(item.expr, table)
+            rows.sort(key=lambda row, _column=column: row.get(_column), reverse=item.descending)
+        table = pa.Table.from_pylist(rows, schema=table.schema) if rows else table.slice(0, 0)
+    if modifiers.skip is not None:
+        skip = _eval_int_literal(modifiers.skip, "SKIP")
+        table = table.slice(skip)
+    if modifiers.limit is not None:
+        limit = _eval_int_literal(modifiers.limit, "LIMIT")
+        table = table.slice(0, limit)
+    return table.combine_chunks().to_batches() if table.num_rows else _table_to_batches(table)
+
+
+def _order_column_name(expr: ta.Expr, table: pa.Table) -> str:
+    if isinstance(expr, ta.Var) and expr.name is not None:
+        name = expr.name.name
+    elif isinstance(expr, ta.PathExpr) and expr.root is not None and len(expr.steps) == 1:
+        dotted = f"{expr.root.name}.{expr.steps[0].name}"
+        name = dotted if dotted in table.column_names else expr.steps[0].name
+    else:
+        name = _default_alias(expr, "n")
+    if name not in table.column_names:
+        raise CaracalError(
+            code="CDB-6020",
+            message=f"ORDER BY expression is not projected as a result column: {name!r}",
+        )
+    return name
+
+
 def _local(iri: str) -> str:
     return iri.rstrip("/#").rsplit("/", 1)[-1].rsplit("#", 1)[-1].rsplit(":", 1)[-1]
 
@@ -2635,4 +5132,15 @@ def _escape_turtle_literal(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
-__all__ = ["Connection", "Database", "NodeQuery", "ResourceRef", "Result", "connect"]
+__all__ = [
+    "Connection",
+    "Database",
+    "NodeQuery",
+    "ResourceRef",
+    "Result",
+    "connect",
+    "cosine_distance",
+    "cosine_similarity",
+    "dot_product",
+    "l2_distance",
+]

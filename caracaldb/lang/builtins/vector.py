@@ -14,6 +14,7 @@ import pyarrow as pa
 
 from caracaldb.lang.builtins.scalar import BuiltinFn
 from caracaldb.lang.diagnostics import CaracalError
+from caracaldb.vector import cosine_distance, cosine_similarity, dot_product, l2_distance
 
 
 def _as_matrix(arr: pa.Array) -> np.ndarray:
@@ -58,6 +59,34 @@ def _similarity(args):
     return pa.array(cos.astype(np.float32), type=pa.float32())
 
 
+def _binary_vector_scalar(args, fn):
+    a = _as_matrix(args[0])
+    b = _as_matrix(args[1])
+    if a.shape != b.shape:
+        raise CaracalError(
+            code="CDB-6061",
+            message=f"vector function shape mismatch: {a.shape} vs {b.shape}",
+        )
+    values = [fn(left, right) for left, right in zip(a, b, strict=True)]
+    return pa.array(values, type=pa.float32())
+
+
+def _cosine_similarity(args):
+    return _binary_vector_scalar(args, cosine_similarity)
+
+
+def _cosine_distance(args):
+    return _binary_vector_scalar(args, cosine_distance)
+
+
+def _dot_product(args):
+    return _binary_vector_scalar(args, dot_product)
+
+
+def _l2_distance(args):
+    return _binary_vector_scalar(args, l2_distance)
+
+
 def _vec_norm(args):
     m = _as_matrix(args[0])
     return pa.array(np.linalg.norm(m, axis=1).astype(np.float32), type=pa.float32())
@@ -81,6 +110,10 @@ VECTOR_FUNCTIONS: dict[str, BuiltinFn] = {
     fn.name: fn
     for fn in [
         _make("similarity", 2, _similarity),
+        _make("cosine_similarity", 2, _cosine_similarity),
+        _make("cosine_distance", 2, _cosine_distance),
+        _make("dot_product", 2, _dot_product),
+        _make("l2_distance", 2, _l2_distance),
         _make("vec_norm", 1, _vec_norm),
         _make("vec_normalize", 1, _vec_normalize),
         BuiltinFn(name="top_k", arity=(2, 3), kind="vector", dispatch=_top_k_unsupported),

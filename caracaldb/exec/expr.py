@@ -82,6 +82,13 @@ def compile_expr(expr: object) -> ExprFn:
         fn = expr[1]
         child = compile_expr(expr[2])
         return lambda batch: fn(child(batch))
+    if head == "py_binary":
+        if len(expr) != 4 or not callable(expr[1]):
+            raise CaracalError(code="CDB-6010", message=f"malformed py_binary: {expr!r}")
+        fn = expr[1]
+        left = compile_expr(expr[2])
+        right = compile_expr(expr[3])
+        return lambda batch: fn(left(batch), right(batch))
     if head == "in":
         if (
             len(expr) != 3
