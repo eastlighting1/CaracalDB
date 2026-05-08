@@ -2414,7 +2414,19 @@ def _vector_search(
         rows = _apply_graph_boosts(db, rows, graph_boosts)[:top_k]
         _rerank_vector_rows(rows)
         return Result(_table_to_batches(_vector_result_table(meta, table, rows, return_properties)))
-    hnsw = HnswIndex.load(db.bundle.child(str(index_file)), config=_hnsw_config(meta))
+    path = db.bundle.child(str(index_file))
+    cache = getattr(db, "_hnsw_index_cache", None)
+    if cache is None:
+        cache = {}
+        db._hnsw_index_cache = cache  # type: ignore[attr-defined]
+    stat = path.stat()
+    cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if cache_key in cache:
+        hnsw = cache[cache_key]
+    else:
+        hnsw = HnswIndex.load(path, config=_hnsw_config(meta))
+        cache.clear()
+        cache[cache_key] = hnsw
     labels, distances = hnsw.search(query, k=candidate_k, ef=_ef_search(meta))
     by_internal = {int(entry["internal_id"]): entry for entry in entries}
     rows = []
@@ -3119,6 +3131,19 @@ def _load_text_index_data(db: Database, meta: Mapping[str, Any]) -> dict[str, An
             message=f"corrupt text index data: {path}",
         ) from exc
     data = dict(payload)
+    
+    import pyroaring
+    
+    exact_bitmaps: dict[str, pyroaring.BitMap] = {}
+    for k, v in data.get("exact", {}).items():
+        exact_bitmaps[k] = pyroaring.BitMap(v)
+    data["_exact_bitmaps"] = exact_bitmaps
+    
+    token_bitmaps: dict[str, pyroaring.BitMap] = {}
+    for k, v in data.get("tokens", {}).items():
+        token_bitmaps[k] = pyroaring.BitMap(v)
+    data["_token_bitmaps"] = token_bitmaps
+
     data["_entries_by_internal_id"] = _text_entries_by_internal_id(data)
     cache.clear()
     cache[cache_key] = data
@@ -3136,23 +3161,35 @@ def _text_candidate_entries(
     index_data: Mapping[str, Any],
     normalized_query: str,
 ) -> dict[int, list[dict[str, Any]]]:
+    import pyroaring
+
     query_tokens = _text_tokens(normalized_query)
-    exact_ids = {int(item) for item in index_data.get("exact", {}).get(normalized_query, [])}
-    token_ids: set[int] = set()
+    
+    exact_bitmaps = index_data.get("_exact_bitmaps", {})
+    token_bitmaps = index_data.get("_token_bitmaps", {})
+    
+    candidate_bitmap = pyroaring.BitMap()
+    exact_match = exact_bitmaps.get(normalized_query)
+    if exact_match is not None:
+        candidate_bitmap |= exact_match
+        
     for token in query_tokens:
-        token_ids.update(int(item) for item in index_data.get("tokens", {}).get(token, []))
-    candidate_ids = exact_ids | token_ids
+        if token in token_bitmaps:
+            candidate_bitmap |= token_bitmaps[token]
+            
+    # Include prefix matches
+    for known_text, bitmap in exact_bitmaps.items():
+        if known_text.startswith(normalized_query):
+            candidate_bitmap |= bitmap
+
     all_entries_by_id = index_data.get("_entries_by_internal_id")
     if not isinstance(all_entries_by_id, dict):
         all_entries_by_id = _text_entries_by_internal_id(index_data)
-    entries_by_id: dict[int, list[dict[str, Any]]] = {
-        internal_id: list(all_entries_by_id.get(internal_id, [])) for internal_id in candidate_ids
-    }
-    for entry in index_data.get("entries", []):
-        if str(entry.get("normalized", "")).startswith(normalized_query):
-            internal_id = int(entry["internal_id"])
-            if internal_id not in entries_by_id:
-                entries_by_id[internal_id] = list(all_entries_by_id.get(internal_id, []))
+
+    entries_by_id: dict[int, list[dict[str, Any]]] = {}
+    for internal_id in candidate_bitmap:
+        entries_by_id[internal_id] = list(all_entries_by_id.get(internal_id, []))
+        
     return entries_by_id
 
 
@@ -4038,8 +4075,8 @@ def _graphrag_search(
             else Result(_table_to_batches(_link_entities_result_table([], (), include_profile)))
         ),
     )
-    entity_rows = entity_links.rows()
-    entity_ids = [row["node_id"] for row in entity_rows]
+    entity_table = entity_links.arrow()
+    entity_ids = entity_table["node_id"].to_pylist() if "node_id" in entity_table.column_names else []
     graph_boost_weight = float(scoring.get("entity_link", 0.25))
     graph_boosts = (
         [{"signal": "mentions_entity", "entity_ids": entity_ids, "weight": graph_boost_weight}]
@@ -4057,11 +4094,18 @@ def _graphrag_search(
             return_properties=return_properties,
         ),
     )
-    semantic_rows = semantic_hits.rows()
-    seed_ids = [row["node_id"] for row in semantic_rows] + entity_ids
-    seed_scores: dict[Any, float] = {
-        row["node_id"]: float(row["score"]) for row in semantic_rows + entity_rows
-    }
+    semantic_table = semantic_hits.arrow()
+    semantic_ids = semantic_table["node_id"].to_pylist() if "node_id" in semantic_table.column_names else []
+    seed_ids = semantic_ids + entity_ids
+    
+    seed_scores: dict[Any, float] = {}
+    if "node_id" in semantic_table.column_names and "score" in semantic_table.column_names:
+        for node_id, score in zip(semantic_ids, semantic_table["score"].to_pylist(), strict=False):
+            seed_scores[node_id] = float(score)
+    if "node_id" in entity_table.column_names and "score" in entity_table.column_names:
+        for node_id, score in zip(entity_ids, entity_table["score"].to_pylist(), strict=False):
+            seed_scores[node_id] = float(score)
+            
     evidence = timed(
         "evidence_search",
         lambda: db.evidence_search(
@@ -4094,8 +4138,8 @@ def _graphrag_search(
         "text_index_used": entity_text_index,
         "node_rows_scanned": 0,
         "edge_rows_scanned": 0,
-        "semantic_candidate_count": len(semantic_rows),
-        "entity_candidate_count": len(entity_rows),
+        "semantic_candidate_count": len(semantic_ids),
+        "entity_candidate_count": len(entity_ids),
         "path_candidate_count": len(evidence_rows),
         "evidence_result_count": evidence_chunks.arrow().num_rows,
         "result_count": evidence_chunks.arrow().num_rows,

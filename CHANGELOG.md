@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.11] - 2026-05-08
+
+### Added
+
+- Added direct PyArrow column projection in `graphrag_search` to bypass dictionary conversion overhead during candidate aggregation.
+
+### Changed
+
+- Significantly accelerated lexical candidate filtering by utilizing `pyroaring.BitMap` for fast bitmap unions instead of Python sets.
+- Improved vector search performance by adding an in-memory cache for `HnswIndex` instances to avoid repeated disk loading.
+
 ## [0.2.10] - 2026-05-08
 
 ### Added
