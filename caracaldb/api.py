@@ -11,15 +11,13 @@ mistranslation.
 from __future__ import annotations
 
 import ast as py_ast
+import collections
 import json
 import os
 import re
 import shutil
 import tempfile
 import time
-import pyarrow as pa
-import pyarrow.compute as pc
-import collections
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
@@ -29,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
 if TYPE_CHECKING:
     import numpy as np
@@ -539,8 +538,7 @@ class Database:
                 raise CaracalError(
                     code="CDB-7021",
                     message=(
-                        "edge table must not include an 'eid' column; "
-                        "it is assigned by the store"
+                        "edge table must not include an 'eid' column; it is assigned by the store"
                     ),
                 )
             relation = _coerce_local_name(row[type_col], "edge type")
@@ -2392,8 +2390,7 @@ def _vector_search(
         raise CaracalError(
             code="CDB-7091",
             message=(
-                f"query dimension mismatch for {index!r}: "
-                f"expected {meta['dimension']}, got {got}"
+                f"query dimension mismatch for {index!r}: expected {meta['dimension']}, got {got}"
             ),
         )
     entries, table = _vector_entries(db, meta)
@@ -2482,26 +2479,30 @@ def _rerank_vector_rows(rows: list[dict[str, Any]]) -> None:
         row["rank"] = rank
 
 
-
-
 _PROCESS_GLOBAL_BUFFER_POOL = {}
 
+
 def _get_arrow_table(db: Database, relation: str) -> pa.Table:
-    path = db.bundle.child(f"edges/{relation}") # Abstract path
+    db.bundle.child(f"edges/{relation}")  # Abstract path
     # In a real embedded DB, we'd use mmap or a proper buffer manager
     # Here we use a process-global dictionary keyed by (bundle_path, relation, mtime)
     bundle_key = str(db.bundle.path)
     try:
-        stat = os.stat(os.path.join(bundle_key, "edges", relation, "data.arrow")) # Dummy check for mtime
+        stat = os.stat(
+            os.path.join(bundle_key, "edges", relation, "data.arrow")
+        )  # Dummy check for mtime
         mtime = stat.st_mtime
-    except:
+    except Exception:
         mtime = 0
-    
+
     cache_key = (bundle_key, relation, mtime)
     if cache_key not in _PROCESS_GLOBAL_BUFFER_POOL:
         prop = _find_property_by_local_name(db, relation)
-        if prop is None: return pa.table({'src': [], 'dst': [], 'eid': []})
-        store = open_edge_store(db.bundle, property_iri=prop.iri, local_name=prop.local_name or _local(prop.iri))
+        if prop is None:
+            return pa.table({"src": [], "dst": [], "eid": []})
+        store = open_edge_store(
+            db.bundle, property_iri=prop.iri, local_name=prop.local_name or _local(prop.iri)
+        )
         _PROCESS_GLOBAL_BUFFER_POOL[cache_key] = store.to_table()
     return _PROCESS_GLOBAL_BUFFER_POOL[cache_key]
 
@@ -2517,27 +2518,28 @@ def _apply_graph_boosts(
     if not graph_boosts:
         _rerank_vector_rows(rows)
         return rows
-    
+
     row_internal_ids = {int(row["internal_id"]) for row in rows}
     precalculated_degrees = collections.defaultdict(int)
-    if any(str(b.get('signal')) == 'degree' for b in graph_boosts):
+    if any(str(b.get("signal")) == "degree" for b in graph_boosts):
         id_arr = pa.array(list(row_internal_ids), type=pa.int64())
         for relation in list_edge_stores(db.bundle):
             table = _get_arrow_table(db, relation)
-            if table.num_rows == 0: continue
-            src_mask = pc.is_in(table['src'], value_set=id_arr)
-            dst_mask = pc.is_in(table['dst'], value_set=id_arr)
+            if table.num_rows == 0:
+                continue
+            src_mask = pc.is_in(table["src"], value_set=id_arr)
+            dst_mask = pc.is_in(table["dst"], value_set=id_arr)
             if pc.any(src_mask).as_py():
-                for item in pc.value_counts(table['src'].filter(src_mask)).to_pylist():
-                    precalculated_degrees[item['values']] += item['counts']
+                for item in pc.value_counts(table["src"].filter(src_mask)).to_pylist():
+                    precalculated_degrees[item["values"]] += item["counts"]
             if pc.any(dst_mask).as_py():
-                for item in pc.value_counts(table['dst'].filter(dst_mask)).to_pylist():
-                    precalculated_degrees[item['values']] += item['counts']
+                for item in pc.value_counts(table["dst"].filter(dst_mask)).to_pylist():
+                    precalculated_degrees[item["values"]] += item["counts"]
 
     adjacency_cache: dict[str, dict[int, list[dict[str, Any]]]] = {}
     linked_entity_gids: dict[tuple[Any, ...], set[int]] = {}
     touched_entity_gids: dict[tuple[Any, ...], set[int]] = {}
-    
+
     # Pre-resolve entity links to support intersection boost
     for boost in graph_boosts:
         if str(boost.get("signal")) == "mentions_entity":
@@ -2545,10 +2547,13 @@ def _apply_graph_boosts(
             if entity_values not in linked_entity_gids:
                 try:
                     gids, _ = _resolve_graph_node_ids(db, entity_values, node_key_col="node_id")
-                except Exception: gids = []
+                except Exception:
+                    gids = []
                 linked_entity_gids[entity_values] = {int(item) for item in gids}
             if entity_values not in touched_entity_gids:
-                touched_entity_gids[entity_values] = _nodes_touching_any(db, row_internal_ids, linked_entity_gids[entity_values])
+                touched_entity_gids[entity_values] = _nodes_touching_any(
+                    db, row_internal_ids, linked_entity_gids[entity_values]
+                )
 
     # Track multi-source reachability (Structural Intersection Boost)
     node_source_counts = collections.defaultdict(set)
@@ -2563,7 +2568,7 @@ def _apply_graph_boosts(
     for row in rows:
         internal_id = int(row["internal_id"])
         boost_score = 0.0
-        
+
         # Fundamental Accuracy Boost: Multi-source convergence
         sources = node_source_counts.get(internal_id, set())
         if len(sources) >= 2:
@@ -2572,7 +2577,8 @@ def _apply_graph_boosts(
         for boost in graph_boosts:
             signal = str(boost.get("signal", ""))
             weight = float(boost.get("weight", 0.0))
-            if weight == 0.0: continue
+            if weight == 0.0:
+                continue
             if signal == "degree":
                 boost_score += weight * float(precalculated_degrees.get(internal_id, 0))
             elif signal == "mentions_entity":
@@ -2582,40 +2588,50 @@ def _apply_graph_boosts(
             elif signal == "edge_weight_sum":
                 edge_type = str(boost.get("edge_type", ""))
                 if edge_type:
-                    adjacency = adjacency_cache.setdefault(edge_type, _cached_typed_adjacency(db, edge_types=(edge_type,), direction="both", filters={}))
-                    boost_score += weight * sum(_edge_numeric_property(edge, "weight") for edge in adjacency.get(internal_id, []))
+                    adjacency = adjacency_cache.setdefault(
+                        edge_type,
+                        _cached_typed_adjacency(
+                            db, edge_types=(edge_type,), direction="both", filters={}
+                        ),
+                    )
+                    boost_score += weight * sum(
+                        _edge_numeric_property(edge, "weight")
+                        for edge in adjacency.get(internal_id, [])
+                    )
         row["graph_boost_score"] = float(boost_score)
         row["score"] = float(row["vector_score"]) + float(boost_score)
     _rerank_vector_rows(rows)
     return rows
-    
+
     row_internal_ids = {int(row["internal_id"]) for row in rows}
     precalculated_degrees = collections.defaultdict(int)
-    if any(str(b.get('signal')) == 'degree' for b in graph_boosts):
+    if any(str(b.get("signal")) == "degree" for b in graph_boosts):
         id_arr = pa.array(list(row_internal_ids), type=pa.int64())
         for relation in list_edge_stores(db.bundle):
             table = _get_arrow_table(db, relation)
-            if table.num_rows == 0: continue
-            src_mask = pc.is_in(table['src'], value_set=id_arr)
-            dst_mask = pc.is_in(table['dst'], value_set=id_arr)
+            if table.num_rows == 0:
+                continue
+            src_mask = pc.is_in(table["src"], value_set=id_arr)
+            dst_mask = pc.is_in(table["dst"], value_set=id_arr)
             if pc.any(src_mask).as_py():
-                for item in pc.value_counts(table['src'].filter(src_mask)).to_pylist():
-                    precalculated_degrees[item['values']] += item['counts']
+                for item in pc.value_counts(table["src"].filter(src_mask)).to_pylist():
+                    precalculated_degrees[item["values"]] += item["counts"]
             if pc.any(dst_mask).as_py():
-                for item in pc.value_counts(table['dst'].filter(dst_mask)).to_pylist():
-                    precalculated_degrees[item['values']] += item['counts']
+                for item in pc.value_counts(table["dst"].filter(dst_mask)).to_pylist():
+                    precalculated_degrees[item["values"]] += item["counts"]
 
     adjacency_cache: dict[str, dict[int, list[dict[str, Any]]]] = {}
     linked_entity_gids: dict[tuple[Any, ...], set[int]] = {}
     touched_entity_gids: dict[tuple[Any, ...], set[int]] = {}
-    
+
     for row in rows:
         internal_id = int(row["internal_id"])
         boost_score = 0.0
         for boost in graph_boosts:
             signal = str(boost.get("signal", ""))
             weight = float(boost.get("weight", 0.0))
-            if weight == 0.0: continue
+            if weight == 0.0:
+                continue
             if signal == "degree":
                 boost_score += weight * float(precalculated_degrees.get(internal_id, 0))
             elif signal == "mentions_entity":
@@ -2623,17 +2639,28 @@ def _apply_graph_boosts(
                 if entity_values not in linked_entity_gids:
                     try:
                         gids, _ = _resolve_graph_node_ids(db, entity_values, node_key_col="node_id")
-                    except Exception: gids = []
+                    except Exception:
+                        gids = []
                     linked_entity_gids[entity_values] = {int(item) for item in gids}
                 if entity_values not in touched_entity_gids:
-                    touched_entity_gids[entity_values] = _nodes_touching_any(db, row_internal_ids, linked_entity_gids[entity_values])
+                    touched_entity_gids[entity_values] = _nodes_touching_any(
+                        db, row_internal_ids, linked_entity_gids[entity_values]
+                    )
                 if internal_id in touched_entity_gids[entity_values]:
                     boost_score += weight
             elif signal == "edge_weight_sum":
                 edge_type = str(boost.get("edge_type", ""))
                 if edge_type:
-                    adjacency = adjacency_cache.setdefault(edge_type, _cached_typed_adjacency(db, edge_types=(edge_type,), direction="both", filters={}))
-                    boost_score += weight * sum(_edge_numeric_property(edge, "weight") for edge in adjacency.get(internal_id, []))
+                    adjacency = adjacency_cache.setdefault(
+                        edge_type,
+                        _cached_typed_adjacency(
+                            db, edge_types=(edge_type,), direction="both", filters={}
+                        ),
+                    )
+                    boost_score += weight * sum(
+                        _edge_numeric_property(edge, "weight")
+                        for edge in adjacency.get(internal_id, [])
+                    )
         row["graph_boost_score"] = float(boost_score)
         row["score"] = float(row["vector_score"]) + float(boost_score)
     _rerank_vector_rows(rows)
@@ -2669,20 +2696,27 @@ def _node_touches_any(db: Database, internal_id: int, targets: set[int]) -> bool
 
 
 def _nodes_touching_any(db: Database, internal_ids: set[int], targets: set[int]) -> set[int]:
-    if not internal_ids or not targets: return set()
+    if not internal_ids or not targets:
+        return set()
     touched: set[int] = set()
     id_arr = pa.array(list(internal_ids), type=pa.int64())
     target_arr = pa.array(list(targets), type=pa.int64())
     for relation in list_edge_stores(db.bundle):
         table = _get_arrow_table(db, relation)
-        if table.num_rows == 0: continue
-        mask_fwd = pc.and_(pc.is_in(table['src'], value_set=id_arr), pc.is_in(table['dst'], value_set=target_arr))
-        mask_bwd = pc.and_(pc.is_in(table['dst'], value_set=id_arr), pc.is_in(table['src'], value_set=target_arr))
+        if table.num_rows == 0:
+            continue
+        mask_fwd = pc.and_(
+            pc.is_in(table["src"], value_set=id_arr), pc.is_in(table["dst"], value_set=target_arr)
+        )
+        mask_bwd = pc.and_(
+            pc.is_in(table["dst"], value_set=id_arr), pc.is_in(table["src"], value_set=target_arr)
+        )
         if pc.any(mask_fwd).as_py():
-            touched.update(table.filter(mask_fwd)['src'].to_pylist())
+            touched.update(table.filter(mask_fwd)["src"].to_pylist())
         if pc.any(mask_bwd).as_py():
-            touched.update(table.filter(mask_bwd)['dst'].to_pylist())
-        if len(touched) >= len(internal_ids): break
+            touched.update(table.filter(mask_bwd)["dst"].to_pylist())
+        if len(touched) >= len(internal_ids):
+            break
     return {i for i in touched if i in internal_ids}
 
 
@@ -2767,11 +2801,11 @@ def _vector_entries(
     if cache is None:
         cache = {}
         db._vector_entries_cache = cache  # type: ignore[attr-defined]
-    
+
     key = str(meta.get("name"))
     if key in cache:
         return cache[key]
-        
+
     import numpy as np
 
     table = _node_table_for_local(db, str(meta["node_type"]))
@@ -3272,15 +3306,15 @@ def _text_candidate_entries(
     exact_match = exact_bitmaps.get(normalized_query)
     if exact_match is not None:
         candidate_bitmap |= exact_match
-        
+
     valid_tokens = [t for t in query_tokens if t in token_bitmaps]
     valid_tokens.sort(key=lambda t: len(token_bitmaps[t]))
-    
+
     for token in valid_tokens:
         candidate_bitmap |= token_bitmaps[token]
         if len(candidate_bitmap) > 1000 and len(valid_tokens) > 1:
             break
-            
+
         # Include prefix matches using vectorized Arrow operation
     # Added length check and match limit to prevent explosive BitMap unions
     if len(normalized_query) >= 3:
@@ -5182,20 +5216,27 @@ def _typed_adjacency(
     adjacency: dict[int, list[dict[str, Any]]] = {}
     for relation in edge_types:
         table = _get_arrow_table(db, relation)
-        if table.num_rows == 0: continue
+        if table.num_rows == 0:
+            continue
         mask = None
         for k, v in filters.items():
-            if k.endswith('_eq'): col, val, op = k[:-3], v, 'equal'
-            elif k.endswith('_gte'): col, val, op = k[:-4], v, 'greater_equal'
-            elif k.endswith('_lte'): col, val, op = k[:-4], v, 'less_equal'
-            elif k.endswith('_gt'): col, val, op = k[:-3], v, 'greater'
-            elif k.endswith('_lt'): col, val, op = k[:-3], v, 'less'
-            else: col, val, op = k, v, 'equal'
+            if k.endswith("_eq"):
+                col, val, op = k[:-3], v, "equal"
+            elif k.endswith("_gte"):
+                col, val, op = k[:-4], v, "greater_equal"
+            elif k.endswith("_lte"):
+                col, val, op = k[:-4], v, "less_equal"
+            elif k.endswith("_gt"):
+                col, val, op = k[:-3], v, "greater"
+            elif k.endswith("_lt"):
+                col, val, op = k[:-3], v, "less"
+            else:
+                col, val, op = k, v, "equal"
             m = getattr(pc, op)(table[col], val)
             mask = m if mask is None else pc.and_(mask, m)
         filtered = table.filter(mask) if mask is not None else table
         for row in filtered.to_pylist():
-            src, dst = int(row['src']), int(row['dst'])
+            src, dst = int(row["src"]), int(row["dst"])
             base = {
                 "edge_id": int(row["eid"]),
                 "edge_type": relation,
