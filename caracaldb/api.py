@@ -142,7 +142,23 @@ class Result:
 
 @dataclass(slots=True)
 class GraphRAGResult:
-    """Materialized graph-native evidence retrieval result."""
+    """Materialized graph-native evidence retrieval result.
+
+    Examples
+    --------
+    ```python
+    result = GraphRAGResult(
+        entity_links=Result([]),
+        semantic_hits=Result([]),
+        evidence_chunks=Result([]),
+        citation_candidates=Result([]),
+        paths=Result([]),
+        profile={"fallback_flags": []},
+    )
+    result.rows()
+    # []
+    ```
+    """
 
     entity_links: Result
     semantic_hits: Result
