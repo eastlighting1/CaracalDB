@@ -13,6 +13,12 @@
   },
   {
     "kind": "class",
+    "name": "caracaldb.GraphRAGResult",
+    "summary": "Materialized graph-native evidence retrieval result.",
+    "url": "api/caracaldb/#graphragresult"
+  },
+  {
+    "kind": "class",
     "name": "caracaldb.NodeQuery",
     "summary": "Fluent node table query.",
     "url": "api/caracaldb/#nodequery"
