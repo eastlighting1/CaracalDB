@@ -2415,18 +2415,14 @@ def _vector_search(
         _rerank_vector_rows(rows)
         return Result(_table_to_batches(_vector_result_table(meta, table, rows, return_properties)))
     path = db.bundle.child(str(index_file))
-    cache = getattr(db, "_hnsw_index_cache", None)
-    if cache is None:
-        cache = {}
-        db._hnsw_index_cache = cache  # type: ignore[attr-defined]
     stat = path.stat()
     cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
-    if cache_key in cache:
-        hnsw = cache[cache_key]
+    if cache_key in _GLOBAL_HNSW_CACHE:
+        hnsw = _GLOBAL_HNSW_CACHE[cache_key]
     else:
         hnsw = HnswIndex.load(path, config=_hnsw_config(meta))
-        cache.clear()
-        cache[cache_key] = hnsw
+        _GLOBAL_HNSW_CACHE.clear()
+        _GLOBAL_HNSW_CACHE[cache_key] = hnsw
     labels, distances = hnsw.search(query, k=candidate_k, ef=_ef_search(meta))
     by_internal = {int(entry["internal_id"]): entry for entry in entries}
     rows = []
@@ -2668,10 +2664,17 @@ def _vector_result_table(
     )
 
 
+_GLOBAL_VECTOR_CACHE: dict[str, tuple[list[dict[str, Any]], pa.Table]] = {}
+_GLOBAL_HNSW_CACHE: dict[tuple[str, int, int], Any] = {}
+
 def _vector_entries(
     db: Database,
     meta: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], pa.Table]:
+    key = str(meta.get("name"))
+    if key in _GLOBAL_VECTOR_CACHE:
+        return _GLOBAL_VECTOR_CACHE[key]
+        
     import numpy as np
 
     table = _node_table_for_local(db, str(meta["node_type"]))
@@ -2713,6 +2716,7 @@ def _vector_entries(
                 ),
             )
         entries.append({"internal_id": int(row[id_column]), "row": row, "vector": vector})
+    _GLOBAL_VECTOR_CACHE[key] = (entries, table)
     return entries, table
 
 
@@ -3107,6 +3111,8 @@ def _build_text_index(db: Database, meta: dict[str, Any]) -> dict[str, Any]:
     return dict(meta)
 
 
+_GLOBAL_TEXT_CACHE: dict[tuple[str, int, int], dict[str, Any]] = {}
+
 def _load_text_index_data(db: Database, meta: Mapping[str, Any]) -> dict[str, Any]:
     ready = meta
     if meta.get("status") != "ready" or not meta.get("index_file"):
@@ -3115,14 +3121,10 @@ def _load_text_index_data(db: Database, meta: Mapping[str, Any]) -> dict[str, An
     if not path.is_file():
         ready = _build_text_index(db, dict(ready))
         path = db.bundle.child(str(ready["index_file"]))
-    cache = getattr(db, "_text_index_data_cache", None)
-    if cache is None:
-        cache = {}
-        db._text_index_data_cache = cache  # type: ignore[attr-defined]
     stat = path.stat()
     cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
-    if cache_key in cache:
-        return cache[cache_key]
+    if cache_key in _GLOBAL_TEXT_CACHE:
+        return _GLOBAL_TEXT_CACHE[cache_key]
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -3145,8 +3147,7 @@ def _load_text_index_data(db: Database, meta: Mapping[str, Any]) -> dict[str, An
     data["_token_bitmaps"] = token_bitmaps
 
     data["_entries_by_internal_id"] = _text_entries_by_internal_id(data)
-    cache.clear()
-    cache[cache_key] = data
+    _GLOBAL_TEXT_CACHE[cache_key] = data
     return data
 
 
@@ -3172,11 +3173,15 @@ def _text_candidate_entries(
     exact_match = exact_bitmaps.get(normalized_query)
     if exact_match is not None:
         candidate_bitmap |= exact_match
-
-    for token in query_tokens:
-        if token in token_bitmaps:
-            candidate_bitmap |= token_bitmaps[token]
-
+        
+    valid_tokens = [t for t in query_tokens if t in token_bitmaps]
+    valid_tokens.sort(key=lambda t: len(token_bitmaps[t]))
+    
+    for token in valid_tokens:
+        candidate_bitmap |= token_bitmaps[token]
+        if len(candidate_bitmap) > 1000 and len(valid_tokens) > 1:
+            break
+            
     # Include prefix matches
     for known_text, bitmap in exact_bitmaps.items():
         if known_text.startswith(normalized_query):
