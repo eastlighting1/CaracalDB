@@ -4076,7 +4076,9 @@ def _graphrag_search(
         ),
     )
     entity_table = entity_links.arrow()
-    entity_ids = entity_table["node_id"].to_pylist() if "node_id" in entity_table.column_names else []
+    entity_ids = (
+        entity_table["node_id"].to_pylist() if "node_id" in entity_table.column_names else []
+    )
     graph_boost_weight = float(scoring.get("entity_link", 0.25))
     graph_boosts = (
         [{"signal": "mentions_entity", "entity_ids": entity_ids, "weight": graph_boost_weight}]
@@ -4095,7 +4097,9 @@ def _graphrag_search(
         ),
     )
     semantic_table = semantic_hits.arrow()
-    semantic_ids = semantic_table["node_id"].to_pylist() if "node_id" in semantic_table.column_names else []
+    semantic_ids = (
+        semantic_table["node_id"].to_pylist() if "node_id" in semantic_table.column_names else []
+    )
     seed_ids = semantic_ids + entity_ids
     
     seed_scores: dict[Any, float] = {}
