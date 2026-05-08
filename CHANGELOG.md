@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-05-09
+
+### Added
+
+- Added global in-memory caching for `HnswIndex` and `TextIndex` data in `Database` to minimize repeated disk loading.
+- Added capability flags for `graphrag.search` and `graphrag.evidence_search` to the `capabilities()` API.
+
+### Changed
+
+- Significantly improved GraphRAG search performance by consolidating internal graph prior caches and utilizing optimized Arrow projections.
+- Updated `Connection.sql` to support a broader range of pattern queries by default.
+
 ## [0.2.11] - 2026-05-08
 
 ### Added

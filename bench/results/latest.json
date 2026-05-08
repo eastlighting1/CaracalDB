@@ -1,0 +1,58 @@
+[
+  {
+    "scenario": "1hop",
+    "metric": "ms",
+    "value": 10.061300010420382,
+    "n": 200000,
+    "degree": 16,
+    "repeats": 1000
+  },
+  {
+    "scenario": "2hop",
+    "metric": "ms",
+    "value": 20.80019999993965,
+    "n": 100000,
+    "degree": 16,
+    "repeats": 120
+  },
+  {
+    "scenario": "knn",
+    "metric": "ms",
+    "value": 64.3557000439614,
+    "n": 50000,
+    "dim": 64,
+    "k": 10,
+    "repeats": 20
+  },
+  {
+    "scenario": "neighbor_sample",
+    "metric": "ms",
+    "value": 96.42519999761134,
+    "n": 100000,
+    "degree": 32,
+    "fanout": 8,
+    "repeats": 60
+  },
+  {
+    "scenario": "graph_ecosystem",
+    "metric": "ms",
+    "open_ms": 1.6829000087454915,
+    "batch_insert_nodes_ms": 143.1027000071481,
+    "batch_insert_edges_ms": 361.16640002001077,
+    "vector_index_build_ms": 178.21189999813214,
+    "vector_search_ms": 160.72750004241243,
+    "entity_linking_ms": 16.750500013586134,
+    "graph_search_ms": 363.02680004155263,
+    "typed_2hop_traversal_ms": 184.8646000144072,
+    "semantic_entry_mode": "caracal_graphrag_search",
+    "query_entity_linking_mode": "caracal_link_entities",
+    "semantic_reentry_mode": "native_result_nodes",
+    "relation_expand_mode": "caracal_evidence_search",
+    "fallback_flags": [],
+    "vector_index_used": "chunk_embedding_hnsw",
+    "result_count": 8,
+    "n_nodes": 10000,
+    "n_edges": 50000,
+    "dim": 32
+  }
+]
