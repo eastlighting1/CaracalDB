@@ -237,6 +237,7 @@ def bench_graph_ecosystem(
 
             graph_search_ms = _elapsed_ms(run_search)
             vector_search_ms = search_result["profile"]["operator_timings"]["vector_graph_search"]
+            entity_linking_ms = search_result["profile"]["operator_timings"]["link_entities"]
             traversal_ms = search_result["profile"]["operator_timings"]["evidence_search"]
             profile = search_result["profile"]
 
@@ -248,6 +249,7 @@ def bench_graph_ecosystem(
         "batch_insert_edges_ms": edge_insert_ms,
         "vector_index_build_ms": index_ms,
         "vector_search_ms": vector_search_ms,
+        "entity_linking_ms": entity_linking_ms,
         "graph_search_ms": graph_search_ms,
         "typed_2hop_traversal_ms": traversal_ms,
         "semantic_entry_mode": "caracal_graphrag_search",

@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.10] - 2026-05-08
+
+### Added
+
+- Added `entity_degree_prior`, `entity_evidence_prior`, and `evidence_direction` scoring parameters to `graphrag_search` to influence entity candidate ranking and bounded evidence expansion.
+- Added `entity_linking_ms` profiling metric to `graph_ecosystem` benchmark reporting.
+
+### Changed
+
+- Significantly improved graph traversal performance by caching adjacency index lookups (including filtered and ordered lookups) and indexing graph priors (`degree`, `supporting_chunk_ids`).
+- Optimized `evidence_search` queue traversal with `collections.deque` for O(1) shifts and added early stopping when the target node type is reached to prevent redundant traversal.
+
 ## [0.2.9] - 2026-05-08
 
 ### Added

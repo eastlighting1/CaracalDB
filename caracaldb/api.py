@@ -17,6 +17,7 @@ import re
 import shutil
 import tempfile
 import time
+from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from numbers import Integral
@@ -1588,6 +1589,18 @@ class Database:
             supporting_chunk_cache = getattr(self, "_supporting_chunk_cache", None)
             if supporting_chunk_cache is not None:
                 supporting_chunk_cache.clear()
+            graph_prior_index_cache = getattr(self, "_graph_prior_index_cache", None)
+            if graph_prior_index_cache is not None:
+                graph_prior_index_cache.clear()
+            node_lookup_cache = getattr(self, "_node_lookup_cache", None)
+            if node_lookup_cache is not None:
+                node_lookup_cache.clear()
+            node_rows_cache = getattr(self, "_node_rows_by_id_cache", None)
+            if node_rows_cache is not None:
+                node_rows_cache.clear()
+            text_index_data_cache = getattr(self, "_text_index_data_cache", None)
+            if text_index_data_cache is not None:
+                text_index_data_cache.clear()
         else:
             for key in list(self._csr_cache):
                 if key == relation_local or key.startswith(f"{relation_local}@"):
@@ -1605,6 +1618,15 @@ class Database:
             supporting_chunk_cache = getattr(self, "_supporting_chunk_cache", None)
             if supporting_chunk_cache is not None:
                 supporting_chunk_cache.clear()
+            graph_prior_index_cache = getattr(self, "_graph_prior_index_cache", None)
+            if graph_prior_index_cache is not None:
+                graph_prior_index_cache.clear()
+            node_lookup_cache = getattr(self, "_node_lookup_cache", None)
+            if node_lookup_cache is not None:
+                node_lookup_cache.clear()
+            node_rows_cache = getattr(self, "_node_rows_by_id_cache", None)
+            if node_rows_cache is not None:
+                node_rows_cache.clear()
         for target in targets:
             target.unlink(missing_ok=True)
 
@@ -2458,6 +2480,8 @@ def _apply_graph_boosts(
         return rows
     adjacency_cache: dict[str, dict[int, list[dict[str, Any]]]] = {}
     linked_entity_gids: dict[tuple[Any, ...], set[int]] = {}
+    touched_entity_gids: dict[tuple[Any, ...], set[int]] = {}
+    row_internal_ids = {int(row["internal_id"]) for row in rows}
     for row in rows:
         internal_id = int(row["internal_id"])
         boost_score = 0.0
@@ -2476,7 +2500,13 @@ def _apply_graph_boosts(
                     except CaracalError:
                         gids = []
                     linked_entity_gids[entity_values] = {int(item) for item in gids}
-                if _node_touches_any(db, internal_id, linked_entity_gids[entity_values]):
+                if entity_values not in touched_entity_gids:
+                    touched_entity_gids[entity_values] = _nodes_touching_any(
+                        db,
+                        row_internal_ids,
+                        linked_entity_gids[entity_values],
+                    )
+                if internal_id in touched_entity_gids[entity_values]:
                     boost_score += weight
             elif signal == "edge_weight_sum":
                 edge_type = str(boost.get("edge_type", ""))
@@ -2526,6 +2556,31 @@ def _node_touches_any(db: Database, internal_id: int, targets: set[int]) -> bool
         if any(int(edge["next"]) in targets for edge in adjacency.get(internal_id, [])):
             return True
     return False
+
+
+def _nodes_touching_any(db: Database, internal_ids: set[int], targets: set[int]) -> set[int]:
+    if not internal_ids or not targets:
+        return set()
+    touched: set[int] = set()
+    for relation in list_edge_stores(db.bundle):
+        prop = _find_property_by_local_name(db, relation)
+        if prop is None:
+            continue
+        store = open_edge_store(
+            db.bundle,
+            property_iri=prop.iri,
+            local_name=prop.local_name or _local(prop.iri),
+        )
+        for row in store.to_table().to_pylist():
+            src = int(row["src"])
+            dst = int(row["dst"])
+            if src in internal_ids and dst in targets:
+                touched.add(src)
+            if dst in internal_ids and src in targets:
+                touched.add(dst)
+            if len(touched) == len(internal_ids):
+                return touched
+    return touched
 
 
 def _vector_result_row(
@@ -3048,6 +3103,14 @@ def _load_text_index_data(db: Database, meta: Mapping[str, Any]) -> dict[str, An
     if not path.is_file():
         ready = _build_text_index(db, dict(ready))
         path = db.bundle.child(str(ready["index_file"]))
+    cache = getattr(db, "_text_index_data_cache", None)
+    if cache is None:
+        cache = {}
+        db._text_index_data_cache = cache  # type: ignore[attr-defined]
+    stat = path.stat()
+    cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if cache_key in cache:
+        return cache[cache_key]
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -3055,7 +3118,18 @@ def _load_text_index_data(db: Database, meta: Mapping[str, Any]) -> dict[str, An
             code="CDB-7094",
             message=f"corrupt text index data: {path}",
         ) from exc
-    return dict(payload)
+    data = dict(payload)
+    data["_entries_by_internal_id"] = _text_entries_by_internal_id(data)
+    cache.clear()
+    cache[cache_key] = data
+    return data
+
+
+def _text_entries_by_internal_id(index_data: Mapping[str, Any]) -> dict[int, list[dict[str, Any]]]:
+    entries_by_id: dict[int, list[dict[str, Any]]] = {}
+    for entry in index_data.get("entries", []):
+        entries_by_id.setdefault(int(entry["internal_id"]), []).append(dict(entry))
+    return entries_by_id
 
 
 def _text_candidate_entries(
@@ -3068,15 +3142,17 @@ def _text_candidate_entries(
     for token in query_tokens:
         token_ids.update(int(item) for item in index_data.get("tokens", {}).get(token, []))
     candidate_ids = exact_ids | token_ids
+    all_entries_by_id = index_data.get("_entries_by_internal_id")
+    if not isinstance(all_entries_by_id, dict):
+        all_entries_by_id = _text_entries_by_internal_id(index_data)
     entries_by_id: dict[int, list[dict[str, Any]]] = {
-        internal_id: [] for internal_id in candidate_ids
+        internal_id: list(all_entries_by_id.get(internal_id, [])) for internal_id in candidate_ids
     }
     for entry in index_data.get("entries", []):
-        internal_id = int(entry["internal_id"])
-        if internal_id in entries_by_id:
-            entries_by_id[internal_id].append(dict(entry))
-        elif str(entry.get("normalized", "")).startswith(normalized_query):
-            entries_by_id.setdefault(internal_id, []).append(dict(entry))
+        if str(entry.get("normalized", "")).startswith(normalized_query):
+            internal_id = int(entry["internal_id"])
+            if internal_id not in entries_by_id:
+                entries_by_id[internal_id] = list(all_entries_by_id.get(internal_id, []))
     return entries_by_id
 
 
@@ -3109,11 +3185,7 @@ def _text_search(
     property_order = {
         property_name: offset for offset, property_name in enumerate(meta["properties"])
     }
-    row_lookup = {
-        int(row[index_data["id_column"]]): row
-        for row in table.to_pylist()
-        if index_data["id_column"] in row
-    }
+    row_lookup = _node_rows_by_id(db, str(meta["node_type"]), str(index_data["id_column"]))
     rows: list[dict[str, Any]] = []
     for internal_id, index_entries in _text_candidate_entries(index_data, normalized_query).items():
         source_row = row_lookup.get(int(internal_id))
@@ -3242,6 +3314,18 @@ def _text_result_table(
         ],
         schema=schema,
     )
+
+
+def _node_rows_by_id(db: Database, node_type: str, id_column: str) -> dict[int, dict[str, Any]]:
+    cache = getattr(db, "_node_rows_by_id_cache", None)
+    if cache is None:
+        cache = {}
+        db._node_rows_by_id_cache = cache  # type: ignore[attr-defined]
+    key = (node_type, id_column)
+    if key not in cache:
+        table = _node_table_for_local(db, node_type)
+        cache[key] = {int(row[id_column]): row for row in table.to_pylist() if id_column in row}
+    return cache[key]
 
 
 def _score_text_match(
@@ -3405,12 +3489,17 @@ def _link_entities(
                 entry["match_type"] = "semantic"
             _merge_selected_properties(entry, row.get("selected_properties", {}))
 
+    graph_priors = _entity_graph_priors(
+        db,
+        [int(entry["internal_id"]) for entry in candidates.values()],
+        degree_weight=weights["degree_prior"],
+        evidence_weight=weights["evidence_chunk_prior"],
+    )
     for entry in candidates.values():
         internal_id = int(entry["internal_id"])
-        degree_prior = _bounded_prior(_node_degree(db, internal_id)) * weights["degree_prior"]
-        evidence_ids = _supporting_chunk_ids(db, internal_id)
-        evidence_prior = _bounded_prior(len(evidence_ids)) * weights["evidence_chunk_prior"]
-        entry["graph_prior_score"] = degree_prior + evidence_prior
+        prior = graph_priors.get(internal_id, {"score": 0.0, "supporting_chunk_ids": []})
+        evidence_ids = list(prior["supporting_chunk_ids"])
+        entry["graph_prior_score"] = float(prior["score"])
         entry["supporting_chunk_ids"] = evidence_ids
         entry["score"] = (
             float(entry["lexical_score"])
@@ -3488,6 +3577,71 @@ def _bounded_prior(value: float) -> float:
     return float(value / (1.0 + value))
 
 
+def _entity_graph_priors(
+    db: Database,
+    internal_ids: list[int],
+    *,
+    degree_weight: float,
+    evidence_weight: float,
+) -> dict[int, dict[str, Any]]:
+    unique_ids = sorted(set(internal_ids))
+    if not unique_ids:
+        return {}
+    if degree_weight == 0.0 and evidence_weight == 0.0:
+        return {
+            internal_id: {"score": 0.0, "supporting_chunk_ids": []} for internal_id in unique_ids
+        }
+
+    index = _graph_prior_index(db)
+    out: dict[int, dict[str, Any]] = {}
+    for internal_id in unique_ids:
+        supporting = sorted(index["supporting_chunk_ids"].get(internal_id, set()))
+        score = (
+            _bounded_prior(float(index["degree"].get(internal_id, 0))) * degree_weight
+            + _bounded_prior(len(supporting)) * evidence_weight
+        )
+        out[internal_id] = {"score": score, "supporting_chunk_ids": supporting}
+    return out
+
+
+def _graph_prior_index(db: Database) -> dict[str, dict[int, Any]]:
+    cache = getattr(db, "_graph_prior_index_cache", None)
+    if cache is None:
+        cache = {}
+        db._graph_prior_index_cache = cache  # type: ignore[attr-defined]
+    if "default" in cache:
+        return cache["default"]
+
+    degree: dict[int, int] = {}
+    supporting: dict[int, set[str]] = {}
+    node_lookup = _node_lookup(db)
+    for relation in list_edge_stores(db.bundle):
+        prop = _find_property_by_local_name(db, relation)
+        if prop is None:
+            continue
+        store = open_edge_store(
+            db.bundle,
+            property_iri=prop.iri,
+            local_name=prop.local_name or _local(prop.iri),
+        )
+        relation_can_support = relation in {"MENTIONS", "EVIDENCED_BY", "HAS_CHUNK"}
+        for row in store.to_table().to_pylist():
+            src = int(row["src"])
+            dst = int(row["dst"])
+            degree[src] = degree.get(src, 0) + 1
+            degree[dst] = degree.get(dst, 0) + 1
+            if not relation_can_support:
+                continue
+            src_node = node_lookup.get(src, _fallback_node_info(src))
+            dst_node = node_lookup.get(dst, _fallback_node_info(dst))
+            if dst_node.get("node_type") == "Chunk":
+                supporting.setdefault(src, set()).add(str(dst_node["node_id"]))
+            if src_node.get("node_type") == "Chunk":
+                supporting.setdefault(dst, set()).add(str(src_node["node_id"]))
+    cache["default"] = {"degree": degree, "supporting_chunk_ids": supporting}
+    return cache["default"]
+
+
 def _supporting_chunk_ids(db: Database, internal_id: int) -> list[str]:
     cache = getattr(db, "_supporting_chunk_cache", None)
     if cache is None:
@@ -3495,6 +3649,11 @@ def _supporting_chunk_ids(db: Database, internal_id: int) -> list[str]:
         db._supporting_chunk_cache = cache  # type: ignore[attr-defined]
     if internal_id in cache:
         return cache[internal_id]
+    prior_index = _graph_prior_index(db)
+    if internal_id in prior_index["supporting_chunk_ids"]:
+        result = sorted(prior_index["supporting_chunk_ids"][internal_id])
+        cache[internal_id] = result
+        return result
     node_lookup = _node_lookup(db)
     out: set[str] = set()
     for relation in list_edge_stores(db.bundle):
@@ -3619,7 +3778,7 @@ def _evidence_search(
 
     seed_internal_ids, _ = _resolve_graph_node_ids(db, seed_node_ids, node_key_col=node_key_col)
     node_lookup = _node_lookup(db, node_key_col=node_key_col)
-    adjacency = _typed_adjacency(
+    adjacency = _cached_typed_adjacency(
         db,
         edge_types=edge_types,
         direction=direction,
@@ -3636,13 +3795,16 @@ def _evidence_search(
     by_seed: dict[int, list[dict[str, Any]]] = {}
     for seed_value, seed_id in zip(seed_node_ids, seed_internal_ids, strict=True):
         seed_score = _seed_score(seed_scores, seed_value, seed_id)
-        queue: list[tuple[int, int, list[int], list[Mapping[str, Any]], set[int]]] = [
-            (seed_id, 0, [seed_id], [], {seed_id})
-        ]
+        queue: deque[tuple[int, int, list[int], list[Mapping[str, Any]], set[int]]] = deque(
+            [(seed_id, 0, [seed_id], [], {seed_id})]
+        )
         seed_rows: list[dict[str, Any]] = []
         while queue:
-            current, depth, path_nodes, path_edges, visited = queue.pop(0)
+            current, depth, path_nodes, path_edges, visited = queue.popleft()
             if depth >= max_depth:
+                continue
+            current_info = node_lookup.get(current, _fallback_node_info(current))
+            if depth > 0 and current_info.get("node_type") == target_type:
                 continue
             for step in adjacency.get(current, []):
                 next_id = int(step["next"])
@@ -3865,6 +4027,10 @@ def _graphrag_search(
                 vector_index=entity_vector_index,
                 query_vector=query_vector if entity_vector_index else None,
                 top_k=entity_top_k,
+                policies={
+                    "degree_prior": float(scoring.get("entity_degree_prior", 0.0)),
+                    "evidence_chunk_prior": float(scoring.get("entity_evidence_prior", 0.0)),
+                },
                 return_properties=("name", "canonical_name", "entity_type"),
                 profile=include_profile,
             )
@@ -3902,7 +4068,7 @@ def _graphrag_search(
             seed_node_ids=seed_ids,
             target_node_type="Chunk",
             edge_types=edge_types,
-            direction="both",
+            direction=str(scoring.get("evidence_direction", "out")),
             max_depth=max_depth,
             top_k=evidence_top_k,
             max_paths_per_seed=max(1, evidence_top_k),
@@ -3913,8 +4079,9 @@ def _graphrag_search(
             seed_scores=seed_scores,
         ),
     )
-    evidence_chunks = _graphrag_evidence_result(evidence.rows(), return_properties)
-    paths = _graphrag_paths_result(evidence.rows())
+    evidence_rows = evidence.rows()
+    evidence_chunks = _graphrag_evidence_result(evidence_rows, return_properties)
+    paths = _graphrag_paths_result(evidence_rows)
     citation_candidates = _citation_candidates_result(evidence_chunks.rows(), citation_top_k)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     profile = {
@@ -3929,7 +4096,7 @@ def _graphrag_search(
         "edge_rows_scanned": 0,
         "semantic_candidate_count": len(semantic_rows),
         "entity_candidate_count": len(entity_rows),
-        "path_candidate_count": len(evidence.rows()),
+        "path_candidate_count": len(evidence_rows),
         "evidence_result_count": evidence_chunks.arrow().num_rows,
         "result_count": evidence_chunks.arrow().num_rows,
         "elapsed_ms": elapsed_ms,
@@ -4095,6 +4262,16 @@ def _citation_candidates_result(rows: list[dict[str, Any]], top_k: int) -> Resul
 
 
 def _mark_node_indexes_stale(db: Database, node_type: str) -> None:
+    for attr in (
+        "_node_lookup_cache",
+        "_node_rows_by_id_cache",
+        "_text_index_data_cache",
+        "_supporting_chunk_cache",
+        "_graph_prior_index_cache",
+    ):
+        cache = getattr(db, attr, None)
+        if cache is not None:
+            cache.clear()
     local_name = _coerce_local_name(node_type, "node type")
     vector_metadata = _load_vector_index_manifest(db)
     changed = False
@@ -4899,16 +5076,13 @@ def _cached_typed_adjacency(
     order_by_property: str | None = None,
     top_per_node: int | None = None,
 ) -> dict[int, list[dict[str, Any]]]:
-    if filters or order_by_property is not None or top_per_node is not None:
-        return _typed_adjacency(
-            db,
-            edge_types=edge_types,
-            direction=direction,
-            filters=filters,
-            order_by_property=order_by_property,
-            top_per_node=top_per_node,
-        )
-    key = (tuple(edge_types), direction)
+    key = (
+        tuple(edge_types),
+        direction,
+        tuple(sorted((str(name), _index_value_key(value)) for name, value in filters.items())),
+        order_by_property,
+        top_per_node,
+    )
     cache = getattr(db, "_typed_adjacency_cache", None)
     if cache is None:
         cache = {}
@@ -4919,6 +5093,8 @@ def _cached_typed_adjacency(
             edge_types=edge_types,
             direction=direction,
             filters=filters,
+            order_by_property=order_by_property,
+            top_per_node=top_per_node,
         )
     return cache[key]
 
@@ -4973,6 +5149,12 @@ def _numeric_compare(value: Any, expected: Any, op: str) -> bool:
 
 
 def _node_lookup(db: Database, *, node_key_col: str = "node_id") -> dict[int, dict[str, Any]]:
+    cache = getattr(db, "_node_lookup_cache", None)
+    if cache is None:
+        cache = {}
+        db._node_lookup_cache = cache  # type: ignore[attr-defined]
+    if node_key_col in cache:
+        return cache[node_key_col]
     lookup: dict[int, dict[str, Any]] = {}
     for class_name in list_node_stores(db.bundle):
         cls = db._find_class(class_name)
@@ -4988,6 +5170,7 @@ def _node_lookup(db: Database, *, node_key_col: str = "node_id") -> dict[int, di
                 "node_type": class_name,
                 "row": row,
             }
+    cache[node_key_col] = lookup
     return lookup
 
 

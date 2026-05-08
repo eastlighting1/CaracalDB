@@ -172,6 +172,11 @@ result = db.graphrag_search(
     chunk_vector_index="chunk_embedding_hnsw",
     entity_text_index="entity_name_text_idx",
     edge_types=["MENTIONS", "RELATED_TO", "EVIDENCED_BY"],
+    scoring={
+        "entity_degree_prior": 0.1,
+        "entity_evidence_prior": 0.1,
+        "evidence_direction": "out",
+    },
     return_properties=["document_id", "text"],
 )
 
