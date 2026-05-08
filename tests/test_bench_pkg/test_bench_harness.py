@@ -29,12 +29,13 @@ def test_bench_knn_returns_well_formed_result() -> None:
 def test_graph_ecosystem_bench_reports_native_modes() -> None:
     result = bench_graph_ecosystem(n_nodes=200, n_edges=600, dim=8, top_k=4)
     assert result["scenario"] == "graph_ecosystem"
-    assert result["semantic_entry_mode"] == "caracal_hnsw"
+    assert result["semantic_entry_mode"] == "caracal_graphrag_search"
+    assert result["query_entity_linking_mode"] == "caracal_link_entities"
     assert result["semantic_reentry_mode"] == "native_result_nodes"
-    assert result["relation_expand_mode"] == "neighbors_api"
+    assert result["relation_expand_mode"] == "caracal_evidence_search"
     assert result["fallback_flags"] == []
     assert result["vector_index_used"] == "chunk_embedding_hnsw"
-    assert result["result_count"] == 4
+    assert result["result_count"] > 0
 
 
 def test_write_and_read_baseline_round_trip(tmp_path: Path) -> None:

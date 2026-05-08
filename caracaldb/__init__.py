@@ -4,6 +4,7 @@ from caracaldb._version import __version__
 from caracaldb.api import (
     Connection,
     Database,
+    GraphRAGResult,
     NodeQuery,
     ResourceRef,
     Result,
@@ -17,6 +18,7 @@ from caracaldb.api import (
 __all__ = [
     "Connection",
     "Database",
+    "GraphRAGResult",
     "NodeQuery",
     "ResourceRef",
     "Result",

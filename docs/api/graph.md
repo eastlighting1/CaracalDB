@@ -49,7 +49,7 @@ latest bundle state.
 
 ## Graph ecosystem primitives
 
-v0.2.8 adds higher-level graph ecosystem APIs for semantic retrieval,
+v0.2.9 adds higher-level graph ecosystem APIs for semantic retrieval,
 lexical lookup, indexed graph artifact access, and evidence/path workloads:
 
 ```python
@@ -126,6 +126,57 @@ matches = db.text_search(
     top_k=10,
     return_properties=["name", "canonical_name", "entity_type"],
 )
+```
+
+The native GraphRAG primitives fuse lexical entity linking, graph-aware vector
+entry, and bounded evidence expansion while still leaving document loading,
+extraction, scoring policy, answer generation, and citation prose to adapters:
+
+```python
+links = db.link_entities(
+    query_text="Sam Bankman-Fried FTX",
+    text_index="entity_name_text_idx",
+    top_k=8,
+    return_properties=["name", "canonical_name", "entity_type"],
+)
+
+hits = db.vector_search(
+    index="chunk_embedding_hnsw",
+    query_vector=query_embedding,
+    top_k=8,
+    graph_boosts=[
+        {"signal": "mentions_entity", "entity_ids": [row["node_id"] for row in links.rows()], "weight": 0.25}
+    ],
+    oversample=4,
+    return_properties=["document_id", "text"],
+)
+
+evidence = db.evidence_search(
+    seed_node_ids=[row["node_id"] for row in hits.rows()],
+    target_node_type="Chunk",
+    edge_types=["MENTIONS", "RELATED_TO", "EVIDENCED_BY"],
+    max_depth=3,
+    top_k=24,
+    return_properties=["document_id", "text"],
+)
+```
+
+For the common fused flow, `graphrag_search` returns a `GraphRAGResult` with
+Arrow-backed `entity_links`, `semantic_hits`, `evidence_chunks`,
+`citation_candidates`, `paths`, and a machine-readable `profile`:
+
+```python
+result = db.graphrag_search(
+    query_text="Sam Bankman-Fried FTX evidence",
+    query_vector=query_embedding,
+    chunk_vector_index="chunk_embedding_hnsw",
+    entity_text_index="entity_name_text_idx",
+    edge_types=["MENTIONS", "RELATED_TO", "EVIDENCED_BY"],
+    return_properties=["document_id", "text"],
+)
+
+assert result.profile["fallback_flags"] == []
+result.evidence_chunks.arrow()
 ```
 
 Property indexes materialize lookup data and are reported by

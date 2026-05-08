@@ -449,6 +449,150 @@ def test_entity_text_index_search_and_reopen(tmp_path: Path) -> None:
     assert reopened[0]["node_id"] == "e3"
 
 
+def test_native_graphrag_primitives_return_arrow_results(tmp_path: Path) -> None:
+    with cdb.connect(tmp_path / "native-graphrag", format="bundle") as db:
+        db.upsert_node_table_arrow(
+            pa.table(
+                {
+                    "node_id": ["e_sbf", "e_ftx", "c_query", "c_evidence"],
+                    "type": ["Entity", "Entity", "Chunk", "Chunk"],
+                    "name": ["Sam Bankman-Fried", "FTX", None, None],
+                    "canonical_name": ["sam bankman fried", "ftx", None, None],
+                    "aliases": [["SBF"], ["FTX Trading"], [], []],
+                    "entity_type": ["person", "organization", None, None],
+                    "document_id": [None, None, "doc1", "doc2"],
+                    "text": [
+                        None,
+                        None,
+                        "Sam Bankman-Fried founded FTX.",
+                        "FTX evidence chunk with citation details.",
+                    ],
+                    "embedding": _embedding_array(
+                        [
+                            1.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            1.0,
+                            0.0,
+                            1.0,
+                            0.0,
+                            0.0,
+                            0.7,
+                            0.3,
+                            0.0,
+                        ],
+                        3,
+                    ),
+                }
+            )
+        )
+        db.upsert_edge_table_arrow(
+            pa.table(
+                {
+                    "src": ["c_query", "e_sbf", "e_ftx", "c_evidence"],
+                    "dst": ["e_sbf", "e_ftx", "c_evidence", "e_ftx"],
+                    "type": ["MENTIONS", "RELATED_TO", "EVIDENCED_BY", "MENTIONS"],
+                    "weight": [0.1, 0.8, 0.75, 0.99],
+                }
+            )
+        )
+        db.create_text_index(
+            name="entity_name_text_idx",
+            node_type="Entity",
+            properties=["name", "canonical_name", "aliases"],
+        )
+        db.create_vector_index(
+            name="entity_embedding_hnsw",
+            node_type="Entity",
+            property="embedding",
+            dimension=3,
+        )
+        db.create_vector_index(
+            name="chunk_embedding_hnsw",
+            node_type="Chunk",
+            property="embedding",
+            dimension=3,
+        )
+
+        linked = db.link_entities(
+            query_text="Sam Bankman Fried and FTX",
+            text_index="entity_name_text_idx",
+            top_k=2,
+            return_properties=["name", "entity_type"],
+        ).rows()
+        vector_linked = db.link_entities(
+            query_text="semantic-only",
+            vector_index="entity_embedding_hnsw",
+            query_vector=[1.0, 0.0, 0.0],
+            top_k=1,
+        ).rows()
+        boosted = db.vector_search(
+            index="chunk_embedding_hnsw",
+            query_vector=[1.0, 0.0, 0.0],
+            top_k=1,
+            graph_boosts=[{"signal": "mentions_entity", "entity_ids": ["e_ftx"], "weight": 1.0}],
+            oversample=2,
+            return_properties=["document_id"],
+        ).rows()
+        evidence = db.evidence_search(
+            seed_node_ids=["e_sbf"],
+            target_node_type="Chunk",
+            edge_types=["MENTIONS", "RELATED_TO", "EVIDENCED_BY"],
+            direction="out",
+            max_depth=3,
+            top_k=3,
+            return_properties=["document_id", "text"],
+            seed_scores={"e_sbf": linked[0]["score"]},
+        )
+        result = db.graphrag_search(
+            query_text="Sam Bankman Fried FTX evidence",
+            query_vector=[1.0, 0.0, 0.0],
+            chunk_vector_index="chunk_embedding_hnsw",
+            entity_text_index="entity_name_text_idx",
+            edge_types=["MENTIONS", "RELATED_TO", "EVIDENCED_BY"],
+            max_depth=3,
+            return_properties=["document_id", "text"],
+        )
+        caps = db.capabilities()
+
+    evidence_rows = evidence.rows()
+    assert linked[0]["node_id"] == "e_sbf"
+    assert vector_linked[0]["node_id"] == "e_sbf"
+    assert boosted[0]["node_id"] == "c_evidence"
+    assert evidence.arrow().column_names[:7] == [
+        "target_node_id",
+        "target_node_type",
+        "score",
+        "rank",
+        "depth",
+        "source_seed_id",
+        "source_seed_type",
+    ]
+    assert evidence_rows[0]["target_node_id"] == "c_evidence"
+    assert evidence_rows[0]["path_edge_types"] == ["RELATED_TO", "EVIDENCED_BY"]
+    assert result.entity_links.rows()[0]["node_id"] == "e_sbf"
+    assert result.semantic_hits.arrow().column_names[:9] == [
+        "node_id",
+        "node_type",
+        "internal_id",
+        "score",
+        "distance",
+        "rank",
+        "matched_property",
+        "vector_score",
+        "graph_boost_score",
+    ]
+    assert result.evidence_chunks.rows()[0]["chunk_id"] == "c_evidence"
+    assert result.citation_candidates.rows()[0]["chunk_id"] == "c_evidence"
+    assert result.paths.rows()[0]["target_node_id"] == "c_evidence"
+    assert result.profile["fallback_flags"] == []
+    assert result.profile["physical_plan"] == "NativeGraphRAGSearch"
+    assert caps["graphrag.search"] is True
+    assert caps["vector_search.graph_boosts"] is True
+    assert caps["arrow.results"] is True
+
+
 def test_multi_seed_paths_return_ranked_context_candidates(tmp_path: Path) -> None:
     with cdb.connect(tmp_path / "multi-seed-paths", format="bundle") as db:
         db.insert_node_table(

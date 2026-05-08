@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.9] - 2026-05-08
+
+### Added
+
+- Added native GraphRAG substrate APIs: `link_entities`, graph-boosted
+  `vector_search`, `evidence_search`, and `graphrag_search`, with
+  Arrow-backed `GraphRAGResult` artifacts and native profile metadata.
+- Updated the `graph_ecosystem` benchmark to report
+  `semantic_entry_mode=caracal_graphrag_search`,
+  `query_entity_linking_mode=caracal_link_entities`,
+  `relation_expand_mode=caracal_evidence_search`, and `fallback_flags=[]`.
+
 ## [0.2.8] - 2026-05-08
 
 ### Added

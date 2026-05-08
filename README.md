@@ -105,6 +105,9 @@ flowchart LR
 - Tuft combines Cypher-like graph patterns with SPARQL-like ontology semantics.
 - Arrow is the execution boundary for scan results and downstream analytics.
 - CSR and CSC graph layouts support traversal, neighbor sampling, and GNN workflows.
+- GraphRAG substrate APIs expose entity linking, graph-aware vector entry, and
+  evidence-path retrieval as reusable database primitives without owning
+  extraction, embedding calls, prompting, answer generation, or reranking policy.
 - Snapshot, WAL, and packed `.crcl` storage paths are tested as first-class engine pieces.
 - The Python API is intentionally small; Rust core work is planned after the reference behavior is stable.
 
@@ -154,6 +157,10 @@ caracal unpack demo-packed.crcl -o restored.crcl
 | `Connection.sql(text, params=None)` | Execute supported Tuft query text |
 | `Result.arrow()` | Return a `pyarrow.Table` |
 | `Result.record_batches()` | Iterate `pyarrow.RecordBatch` results |
+| `Database.link_entities(...)` | Link query text to graph entity nodes |
+| `Database.vector_search(..., graph_boosts=...)` | Use semantic entry with graph-aware score boosts |
+| `Database.evidence_search(...)` | Expand typed paths from seeds to evidence chunks |
+| `Database.graphrag_search(...)` | Return a `GraphRAGResult` for fused entity, semantic, evidence, citation, path, and profile artifacts |
 
 ### CLI commands
 

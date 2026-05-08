@@ -38,3 +38,4 @@ Thumbs.db
 main.py
 .claude/settings.local.json
 checklist.md
+caracaldb_development_requirements.md

@@ -123,11 +123,33 @@ def bench_graph_ecosystem(
 ) -> BenchResult:
     rng = np.random.default_rng(42)
     vectors = rng.normal(size=(n_nodes, dim)).astype(np.float32)
-    flat_vectors = pa.array(vectors.ravel().tolist(), type=pa.float32())
+    n_entities = max(4, min(256, max(4, n_nodes // 20)))
+    entity_vectors = rng.normal(size=(n_entities, dim)).astype(np.float32)
+    all_vectors = np.vstack([entity_vectors, vectors])
+    flat_vectors = pa.array(all_vectors.ravel().tolist(), type=pa.float32())
     embeddings = pa.FixedSizeListArray.from_arrays(flat_vectors, dim)
+    entity_ids = [f"entity/{i:04d}" for i in range(n_entities)]
     node_ids = [f"chunk/{i:05d}" for i in range(n_nodes)]
-    src = [node_ids[i % n_nodes] for i in range(n_edges)]
-    dst = [node_ids[(i * 7 + 11) % n_nodes] for i in range(n_edges)]
+    mention_edges = min(max(n_nodes, n_entities), max(1, n_edges // 5))
+    relation_edges = min(n_entities * 2, max(1, n_edges // 20))
+    evidence_edges = min(n_entities * 2, max(1, n_edges // 20))
+    semantic_edges = max(0, n_edges - mention_edges - relation_edges - evidence_edges)
+    semantic_src = [node_ids[i % n_nodes] for i in range(semantic_edges)]
+    semantic_dst = [node_ids[(i * 7 + 11) % n_nodes] for i in range(semantic_edges)]
+    mention_src = [node_ids[i % n_nodes] for i in range(mention_edges)]
+    mention_dst = [entity_ids[i % n_entities] for i in range(mention_edges)]
+    relation_src = [entity_ids[i % n_entities] for i in range(relation_edges)]
+    relation_dst = [entity_ids[(i * 3 + 1) % n_entities] for i in range(relation_edges)]
+    evidence_src = [entity_ids[i % n_entities] for i in range(evidence_edges)]
+    evidence_dst = [node_ids[(i * 11 + 3) % n_nodes] for i in range(evidence_edges)]
+    src = semantic_src + mention_src + relation_src + evidence_src
+    dst = semantic_dst + mention_dst + relation_dst + evidence_dst
+    edge_types = (
+        ["SEMANTIC_NEIGHBOR"] * semantic_edges
+        + ["MENTIONS"] * mention_edges
+        + ["RELATED_TO"] * relation_edges
+        + ["EVIDENCED_BY"] * evidence_edges
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "graph-ecosystem"
@@ -135,11 +157,27 @@ def bench_graph_ecosystem(
         with cdb.connect(path, format="bundle") as db:
             node_table = pa.table(
                 {
-                    "node_id": pa.array(node_ids),
-                    "type": pa.array(["Chunk"] * n_nodes),
-                    "source_type": pa.array(["document"] * n_nodes),
-                    "document_id": pa.array([f"doc/{i // 10:04d}" for i in range(n_nodes)]),
-                    "text": pa.array([f"chunk text {i}" for i in range(n_nodes)]),
+                    "node_id": pa.array(entity_ids + node_ids),
+                    "type": pa.array(["Entity"] * n_entities + ["Chunk"] * n_nodes),
+                    "source_type": pa.array([None] * n_entities + ["document"] * n_nodes),
+                    "document_id": pa.array(
+                        [None] * n_entities + [f"doc/{i // 10:04d}" for i in range(n_nodes)]
+                    ),
+                    "text": pa.array(
+                        [None] * n_entities
+                        + [
+                            f"chunk text {i} mentions entity {i % n_entities}"
+                            for i in range(n_nodes)
+                        ]
+                    ),
+                    "name": pa.array([f"Entity {i}" for i in range(n_entities)] + [None] * n_nodes),
+                    "canonical_name": pa.array(
+                        [f"entity {i}" for i in range(n_entities)] + [None] * n_nodes
+                    ),
+                    "aliases": pa.array(
+                        [[f"E{i}"] for i in range(n_entities)] + [[] for _ in range(n_nodes)]
+                    ),
+                    "entity_type": pa.array(["topic"] * n_entities + [None] * n_nodes),
                     "embedding": embeddings,
                 }
             )
@@ -147,14 +185,26 @@ def bench_graph_ecosystem(
                 {
                     "src": pa.array(src),
                     "dst": pa.array(dst),
-                    "type": pa.array(["SEMANTIC_NEIGHBOR"] * n_edges),
-                    "weight": pa.array(rng.random(n_edges).astype(np.float32)),
-                    "metric": pa.array(["cosine"] * n_edges),
-                    "index_name": pa.array(["chunk_embedding_hnsw"] * n_edges),
+                    "type": pa.array(edge_types),
+                    "weight": pa.array(rng.random(len(src)).astype(np.float32)),
+                    "metric": pa.array(
+                        ["cosine" if kind == "SEMANTIC_NEIGHBOR" else None for kind in edge_types]
+                    ),
+                    "index_name": pa.array(
+                        [
+                            "chunk_embedding_hnsw" if kind == "SEMANTIC_NEIGHBOR" else None
+                            for kind in edge_types
+                        ]
+                    ),
                 }
             )
             node_insert_ms = _elapsed_ms(lambda: db.upsert_node_table_arrow(node_table))
             edge_insert_ms = _elapsed_ms(lambda: db.upsert_edge_table_arrow(edge_table))
+            db.create_text_index(
+                name="entity_name_text_idx",
+                node_type="Entity",
+                properties=["name", "canonical_name", "aliases"],
+            )
             index_ms = _elapsed_ms(
                 lambda: db.create_vector_index(
                     name="chunk_embedding_hnsw",
@@ -170,31 +220,25 @@ def bench_graph_ecosystem(
             search_result: dict[str, Any] = {}
 
             def run_search() -> None:
-                search_result["rows"] = db.vector_search(
-                    index="chunk_embedding_hnsw",
+                result = db.graphrag_search(
+                    query_text="Entity 0 evidence",
                     query_vector=query,
-                    top_k=top_k,
+                    chunk_vector_index="chunk_embedding_hnsw",
+                    entity_text_index="entity_name_text_idx",
+                    edge_types=["MENTIONS", "RELATED_TO", "EVIDENCED_BY", "SEMANTIC_NEIGHBOR"],
+                    max_depth=2,
+                    semantic_top_k=top_k,
+                    entity_top_k=4,
+                    evidence_top_k=max(top_k, 8),
                     return_properties=["document_id", "text"],
-                ).rows()
+                )
+                search_result["rows"] = result.rows()
+                search_result["profile"] = result.profile
 
-            vector_search_ms = _elapsed_ms(run_search)
-            seed_ids = [row["node_id"] for row in search_result["rows"][:2]]
-            traversal_ms = _elapsed_ms(
-                lambda: db.neighbors(
-                    seed_node_ids=seed_ids,
-                    edge_types=["SEMANTIC_NEIGHBOR"],
-                    direction="out",
-                    depth=2,
-                    limit=100,
-                    edge_filters={"weight_gte": 0.0},
-                    return_paths=True,
-                    path_score="product",
-                    path_score_property="weight",
-                ).rows()
-            )
-            profile = db.profile(
-                "CALL vector.search('chunk_embedding_hnsw', " f"{query[:dim]}, {top_k})"
-            )
+            graph_search_ms = _elapsed_ms(run_search)
+            vector_search_ms = search_result["profile"]["operator_timings"]["vector_graph_search"]
+            traversal_ms = search_result["profile"]["operator_timings"]["evidence_search"]
+            profile = search_result["profile"]
 
     return {
         "scenario": "graph_ecosystem",
@@ -204,15 +248,17 @@ def bench_graph_ecosystem(
         "batch_insert_edges_ms": edge_insert_ms,
         "vector_index_build_ms": index_ms,
         "vector_search_ms": vector_search_ms,
+        "graph_search_ms": graph_search_ms,
         "typed_2hop_traversal_ms": traversal_ms,
-        "semantic_entry_mode": "caracal_hnsw",
+        "semantic_entry_mode": "caracal_graphrag_search",
+        "query_entity_linking_mode": "caracal_link_entities",
         "semantic_reentry_mode": "native_result_nodes",
-        "relation_expand_mode": "neighbors_api",
+        "relation_expand_mode": "caracal_evidence_search",
         "fallback_flags": profile["fallback_flags"],
         "vector_index_used": profile["vector_index_used"],
         "result_count": len(search_result["rows"]),
         "n_nodes": n_nodes,
-        "n_edges": n_edges,
+        "n_edges": len(src),
         "dim": dim,
     }
 

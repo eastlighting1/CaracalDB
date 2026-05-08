@@ -140,6 +140,27 @@ class Result:
         return iter(self._batches)
 
 
+@dataclass(slots=True)
+class GraphRAGResult:
+    """Materialized graph-native evidence retrieval result."""
+
+    entity_links: Result
+    semantic_hits: Result
+    evidence_chunks: Result
+    citation_candidates: Result
+    paths: Result
+    profile: dict[str, Any]
+
+    def arrow(self) -> pa.Table:
+        return self.evidence_chunks.arrow()
+
+    def rows(self) -> list[dict[str, Any]]:
+        return self.evidence_chunks.rows()
+
+    def record_batches(self) -> Iterator[pa.RecordBatch]:
+        return self.evidence_chunks.record_batches()
+
+
 @dataclass(frozen=True, slots=True)
 class NodeQuery:
     """Fluent node table query.
@@ -664,6 +685,8 @@ class Database:
         query_vector: Iterable[float],
         top_k: int,
         filters: Mapping[str, Any] | None = None,
+        graph_boosts: Iterable[Mapping[str, Any]] | None = None,
+        oversample: int = 1,
         return_properties: Iterable[str] | None = None,
     ) -> Result:
         """Search a vector index and return graph-addressable node results."""
@@ -674,6 +697,8 @@ class Database:
             query_vector=query_vector,
             top_k=top_k,
             filters=dict(filters or {}),
+            graph_boosts=tuple(dict(item) for item in (graph_boosts or ())),
+            oversample=oversample,
             return_properties=tuple(return_properties or ()),
         )
 
@@ -1302,6 +1327,110 @@ class Database:
             return_properties=tuple(return_properties or ()),
         )
 
+    def link_entities(
+        self,
+        *,
+        query_text: str,
+        text_index: str | None = None,
+        vector_index: str | None = None,
+        query_vector: Iterable[float] | None = None,
+        node_type: str = "Entity",
+        top_k: int = 12,
+        policies: Mapping[str, float] | None = None,
+        return_properties: Iterable[str] | None = None,
+        profile: bool = False,
+    ) -> Result:
+        """Link query text to graph entity nodes using DB-side indexes."""
+
+        return _link_entities(
+            self,
+            query_text=query_text,
+            text_index=text_index,
+            vector_index=vector_index,
+            query_vector=query_vector,
+            node_type=node_type,
+            top_k=top_k,
+            policies=dict(policies or {}),
+            return_properties=tuple(return_properties or ()),
+            include_profile=profile,
+        )
+
+    def evidence_search(
+        self,
+        *,
+        seed_node_ids: Iterable[Any],
+        target_node_type: str = "Chunk",
+        edge_types: Iterable[str],
+        direction: str = "both",
+        max_depth: int = 2,
+        top_k: int = 36,
+        max_paths_per_seed: int = 8,
+        top_edges_per_node: int | None = 24,
+        scoring: Mapping[str, float] | None = None,
+        edge_weight_property: str = "weight",
+        return_properties: Iterable[str] | None = None,
+        return_paths: bool = True,
+        seed_scores: Mapping[Any, float] | None = None,
+        node_key_col: str = "node_id",
+    ) -> Result:
+        """Retrieve citation-ready evidence chunks through typed graph paths."""
+
+        return _evidence_search(
+            self,
+            seed_node_ids=tuple(seed_node_ids),
+            target_node_type=target_node_type,
+            edge_types=tuple(edge_types),
+            direction=direction,
+            max_depth=max_depth,
+            top_k=top_k,
+            max_paths_per_seed=max_paths_per_seed,
+            top_edges_per_node=top_edges_per_node,
+            scoring=dict(scoring or {}),
+            edge_weight_property=edge_weight_property,
+            return_properties=tuple(return_properties or ()),
+            return_paths=return_paths,
+            seed_scores=dict(seed_scores or {}),
+            node_key_col=node_key_col,
+        )
+
+    def graphrag_search(
+        self,
+        *,
+        query_text: str,
+        query_vector: Iterable[float],
+        chunk_vector_index: str,
+        entity_text_index: str | None = None,
+        entity_vector_index: str | None = None,
+        edge_types: Iterable[str],
+        max_depth: int = 2,
+        semantic_top_k: int = 12,
+        entity_top_k: int = 8,
+        evidence_top_k: int = 36,
+        citation_top_k: int = 3,
+        scoring: Mapping[str, float] | None = None,
+        return_properties: Iterable[str] | None = None,
+        profile: bool = True,
+    ) -> GraphRAGResult:
+        """Run DB-native semantic entry, entity anchoring, and evidence retrieval."""
+
+        return _graphrag_search(
+            self,
+            query_text=query_text,
+            query_vector=query_vector,
+            chunk_vector_index=chunk_vector_index,
+            entity_text_index=entity_text_index,
+            entity_vector_index=entity_vector_index,
+            edge_types=tuple(edge_types),
+            max_depth=max_depth,
+            semantic_top_k=semantic_top_k,
+            entity_top_k=entity_top_k,
+            evidence_top_k=evidence_top_k,
+            citation_top_k=citation_top_k,
+            scoring=dict(scoring or {}),
+            return_properties=tuple(return_properties or ()),
+            include_profile=profile,
+        )
+
     def capabilities(self) -> dict[str, Any]:
         """Return feature flags without running a query."""
 
@@ -1309,14 +1438,20 @@ class Database:
 
         return {
             "version": __version__,
+            "graphrag.link_entities": True,
+            "graphrag.evidence_search": True,
+            "graphrag.vector_graph_search": True,
+            "graphrag.search": True,
             "vector_property": True,
             "vector_index.hnsw": True,
             "vector_search": True,
+            "vector_search.graph_boosts": True,
             "vector_distance_functions": True,
             "traversal.neighbors": True,
             "traversal.k_hop": True,
             "traversal.paths": True,
             "traversal.multi_seed_paths": True,
+            "traversal.evidence_search": True,
             "traversal.shortest_path": True,
             "traversal.weighted_edges": True,
             "semantic_neighbor_edges": True,
@@ -1327,6 +1462,7 @@ class Database:
             "batch_upsert": True,
             "property_index": True,
             "text_index": True,
+            "arrow.results": True,
         }
 
     def explain(self, text: str) -> dict[str, Any]:
@@ -1430,6 +1566,12 @@ class Database:
             degree_cache = getattr(self, "_degree_cache", None)
             if degree_cache is not None:
                 degree_cache.clear()
+            typed_adjacency_cache = getattr(self, "_typed_adjacency_cache", None)
+            if typed_adjacency_cache is not None:
+                typed_adjacency_cache.clear()
+            supporting_chunk_cache = getattr(self, "_supporting_chunk_cache", None)
+            if supporting_chunk_cache is not None:
+                supporting_chunk_cache.clear()
         else:
             for key in list(self._csr_cache):
                 if key == relation_local or key.startswith(f"{relation_local}@"):
@@ -1439,6 +1581,14 @@ class Database:
             degree_cache = getattr(self, "_degree_cache", None)
             if degree_cache is not None:
                 degree_cache.pop(relation_local, None)
+            typed_adjacency_cache = getattr(self, "_typed_adjacency_cache", None)
+            if typed_adjacency_cache is not None:
+                for key in list(typed_adjacency_cache):
+                    if relation_local in key[0]:
+                        del typed_adjacency_cache[key]
+            supporting_chunk_cache = getattr(self, "_supporting_chunk_cache", None)
+            if supporting_chunk_cache is not None:
+                supporting_chunk_cache.clear()
         for target in targets:
             target.unlink(missing_ok=True)
 
@@ -2179,10 +2329,14 @@ def _vector_search(
     query_vector: Iterable[float],
     top_k: int,
     filters: dict[str, Any],
+    graph_boosts: tuple[dict[str, Any], ...] = (),
+    oversample: int = 1,
     return_properties: tuple[str, ...],
 ) -> Result:
     if top_k < 0:
         raise CaracalError(code="CDB-6090", message="top_k must be >= 0")
+    if oversample < 1:
+        raise CaracalError(code="CDB-6090", message="oversample must be >= 1")
     metadata = _load_vector_index_manifest(db)
     if index not in metadata:
         raise CaracalError(code="CDB-7092", message=f"vector index not found: {index!r}")
@@ -2206,17 +2360,24 @@ def _vector_search(
     if top_k == 0 or not entries:
         return Result(_table_to_batches(_vector_result_table(meta, table, [], return_properties)))
 
+    candidate_k = min(len(entries), max(top_k, top_k * oversample if graph_boosts else top_k))
     if filters or meta["algorithm"] == "exact":
         candidates = [entry for entry in entries if _row_matches_filters(entry["row"], filters)]
-        rows = _rank_exact_vector_candidates(meta, query, candidates, top_k, return_properties)
+        rows = _rank_exact_vector_candidates(
+            meta, query, candidates, candidate_k, return_properties
+        )
+        rows = _apply_graph_boosts(db, rows, graph_boosts)[:top_k]
+        _rerank_vector_rows(rows)
         return Result(_table_to_batches(_vector_result_table(meta, table, rows, return_properties)))
 
     index_file = meta.get("index_file")
     if not index_file:
-        rows = _rank_exact_vector_candidates(meta, query, entries, top_k, return_properties)
+        rows = _rank_exact_vector_candidates(meta, query, entries, candidate_k, return_properties)
+        rows = _apply_graph_boosts(db, rows, graph_boosts)[:top_k]
+        _rerank_vector_rows(rows)
         return Result(_table_to_batches(_vector_result_table(meta, table, rows, return_properties)))
     hnsw = HnswIndex.load(db.bundle.child(str(index_file)), config=_hnsw_config(meta))
-    labels, distances = hnsw.search(query, k=min(top_k, len(entries)), ef=_ef_search(meta))
+    labels, distances = hnsw.search(query, k=candidate_k, ef=_ef_search(meta))
     by_internal = {int(entry["internal_id"]): entry for entry in entries}
     rows = []
     for internal_id, distance in zip(labels[0].tolist(), distances[0].tolist(), strict=True):
@@ -2225,10 +2386,9 @@ def _vector_search(
             continue
         score = score_from_distance(meta["metric"], float(distance), query, entry["vector"])
         rows.append(_vector_result_row(meta, entry, float(distance), score, return_properties))
-    rows.sort(key=lambda row: (-float(row["score"]), int(row["internal_id"])))
+    rows = _apply_graph_boosts(db, rows, graph_boosts)
     rows = rows[:top_k]
-    for rank, row in enumerate(rows, start=1):
-        row["rank"] = rank
+    _rerank_vector_rows(rows)
     return Result(_table_to_batches(_vector_result_table(meta, table, rows, return_properties)))
 
 
@@ -2263,6 +2423,95 @@ def _rank_exact_vector_candidates(
     return rows
 
 
+def _rerank_vector_rows(rows: list[dict[str, Any]]) -> None:
+    rows.sort(key=lambda row: (-float(row["score"]), int(row["internal_id"])))
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = rank
+
+
+def _apply_graph_boosts(
+    db: Database,
+    rows: list[dict[str, Any]],
+    graph_boosts: tuple[dict[str, Any], ...],
+) -> list[dict[str, Any]]:
+    for row in rows:
+        row["vector_score"] = float(row["score"])
+        row["graph_boost_score"] = 0.0
+    if not graph_boosts:
+        _rerank_vector_rows(rows)
+        return rows
+    adjacency_cache: dict[str, dict[int, list[dict[str, Any]]]] = {}
+    linked_entity_gids: dict[tuple[Any, ...], set[int]] = {}
+    for row in rows:
+        internal_id = int(row["internal_id"])
+        boost_score = 0.0
+        for boost in graph_boosts:
+            signal = str(boost.get("signal", ""))
+            weight = float(boost.get("weight", 0.0))
+            if weight == 0.0:
+                continue
+            if signal == "degree":
+                boost_score += weight * _node_degree(db, internal_id)
+            elif signal == "mentions_entity":
+                entity_values = tuple(boost.get("entity_ids", ()))
+                if entity_values not in linked_entity_gids:
+                    try:
+                        gids, _ = _resolve_graph_node_ids(db, entity_values, node_key_col="node_id")
+                    except CaracalError:
+                        gids = []
+                    linked_entity_gids[entity_values] = {int(item) for item in gids}
+                if _node_touches_any(db, internal_id, linked_entity_gids[entity_values]):
+                    boost_score += weight
+            elif signal == "edge_weight_sum":
+                edge_type = str(boost.get("edge_type", ""))
+                if edge_type:
+                    adjacency = adjacency_cache.setdefault(
+                        edge_type,
+                        _cached_typed_adjacency(
+                            db,
+                            edge_types=(edge_type,),
+                            direction="both",
+                            filters={},
+                        ),
+                    )
+                    boost_score += weight * sum(
+                        _edge_numeric_property(edge, "weight")
+                        for edge in adjacency.get(internal_id, [])
+                    )
+        row["graph_boost_score"] = float(boost_score)
+        row["score"] = float(row["vector_score"]) + float(boost_score)
+    _rerank_vector_rows(rows)
+    return rows
+
+
+def _node_degree(db: Database, internal_id: int) -> float:
+    total = 0
+    for relation in list_edge_stores(db.bundle):
+        adjacency = _cached_typed_adjacency(
+            db,
+            edge_types=(relation,),
+            direction="both",
+            filters={},
+        )
+        total += len(adjacency.get(internal_id, []))
+    return float(total)
+
+
+def _node_touches_any(db: Database, internal_id: int, targets: set[int]) -> bool:
+    if not targets:
+        return False
+    for relation in list_edge_stores(db.bundle):
+        adjacency = _cached_typed_adjacency(
+            db,
+            edge_types=(relation,),
+            direction="both",
+            filters={},
+        )
+        if any(int(edge["next"]) in targets for edge in adjacency.get(internal_id, [])):
+            return True
+    return False
+
+
 def _vector_result_row(
     meta: Mapping[str, Any],
     entry: Mapping[str, Any],
@@ -2276,6 +2525,8 @@ def _vector_result_row(
         "node_type": meta["node_type"],
         "internal_id": int(entry["internal_id"]),
         "score": float(score),
+        "vector_score": float(score),
+        "graph_boost_score": 0.0,
         "distance": float(distance),
         "rank": 0,
         "matched_property": meta["property"],
@@ -2310,6 +2561,8 @@ def _vector_result_table(
             pa.field("distance", pa.float32()),
             pa.field("rank", pa.uint64()),
             pa.field("matched_property", pa.string()),
+            pa.field("vector_score", pa.float32()),
+            pa.field("graph_boost_score", pa.float32()),
             pa.field("selected_properties", selected_type),
         ]
     )
@@ -2324,6 +2577,8 @@ def _vector_result_table(
             pa.array([row["distance"] for row in rows], type=pa.float32()),
             pa.array([row["rank"] for row in rows], type=pa.uint64()),
             pa.array([row["matched_property"] for row in rows], type=pa.string()),
+            pa.array([row["vector_score"] for row in rows], type=pa.float32()),
+            pa.array([row["graph_boost_score"] for row in rows], type=pa.float32()),
             pa.array([row["selected_properties"] for row in rows], type=selected_type),
         ],
         schema=schema,
@@ -3057,6 +3312,770 @@ def _write_text_index_manifest(
     tmp = path.with_name(f"{path.name}.tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _link_entities(
+    db: Database,
+    *,
+    query_text: str,
+    text_index: str | None,
+    vector_index: str | None,
+    query_vector: Iterable[float] | None,
+    node_type: str,
+    top_k: int,
+    policies: Mapping[str, float],
+    return_properties: tuple[str, ...],
+    include_profile: bool,
+) -> Result:
+    if top_k < 0:
+        raise CaracalError(code="CDB-6090", message="top_k must be >= 0")
+    if text_index is None and (vector_index is None or query_vector is None):
+        raise CaracalError(
+            code="CDB-6020",
+            message="link_entities requires text_index or vector_index with query_vector",
+        )
+    weights = {
+        "exact_phrase": 1.0,
+        "canonical_phrase": 1.0,
+        "alias_phrase": 0.9,
+        "token_overlap": 0.45,
+        "semantic": 0.35,
+        "degree_prior": 0.05,
+        "evidence_chunk_prior": 0.15,
+        **policies,
+    }
+    candidates: dict[str, dict[str, Any]] = {}
+    indexes_used: list[str] = []
+    candidate_count = 0
+    if text_index is not None:
+        text_rows = db.text_search(
+            index=text_index,
+            query=query_text,
+            top_k=max(top_k * 4, top_k, 16),
+            return_properties=_entity_return_properties(return_properties),
+        ).rows()
+        indexes_used.append(text_index)
+        candidate_count += len(text_rows)
+        for row in text_rows:
+            node_id = str(row["node_id"])
+            entry = candidates.setdefault(node_id, _empty_entity_candidate(row))
+            lexical = _weighted_lexical_score(row, weights)
+            if lexical > entry["lexical_score"]:
+                entry.update(
+                    {
+                        "lexical_score": lexical,
+                        "match_type": row["match_kind"],
+                        "matched_text": row["matched_text"],
+                    }
+                )
+            _merge_selected_properties(entry, row.get("selected_properties", {}))
+    if vector_index is not None and query_vector is not None:
+        vector_rows = db.vector_search(
+            index=vector_index,
+            query_vector=query_vector,
+            top_k=max(top_k * 4, top_k, 16),
+            return_properties=_entity_return_properties(return_properties),
+        ).rows()
+        indexes_used.append(vector_index)
+        candidate_count += len(vector_rows)
+        for row in vector_rows:
+            node_id = str(row["node_id"])
+            entry = candidates.setdefault(node_id, _empty_entity_candidate(row))
+            entry["semantic_score"] = max(
+                float(entry["semantic_score"]),
+                float(row.get("vector_score", row.get("score", 0.0))) * weights["semantic"],
+            )
+            if entry["match_type"] == "none":
+                entry["match_type"] = "semantic"
+            _merge_selected_properties(entry, row.get("selected_properties", {}))
+
+    for entry in candidates.values():
+        internal_id = int(entry["internal_id"])
+        degree_prior = _bounded_prior(_node_degree(db, internal_id)) * weights["degree_prior"]
+        evidence_ids = _supporting_chunk_ids(db, internal_id)
+        evidence_prior = _bounded_prior(len(evidence_ids)) * weights["evidence_chunk_prior"]
+        entry["graph_prior_score"] = degree_prior + evidence_prior
+        entry["supporting_chunk_ids"] = evidence_ids
+        entry["score"] = (
+            float(entry["lexical_score"])
+            + float(entry["semantic_score"])
+            + float(entry["graph_prior_score"])
+        )
+        selected = entry["selected_properties"]
+        entry["name"] = selected.get("name")
+        entry["canonical_name"] = selected.get("canonical_name")
+        entry["entity_type"] = selected.get("entity_type")
+        entry["entity_id"] = selected.get("entity_id", entry["node_id"])
+
+    rows = list(candidates.values())
+    rows.sort(key=lambda row: (-float(row["score"]), str(row["node_id"])))
+    rows = rows[:top_k]
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = rank
+        if include_profile:
+            row["profile"] = {
+                "indexes_used": indexes_used,
+                "candidate_count": candidate_count,
+                "fallback_flags": [],
+            }
+    return Result(
+        _table_to_batches(_link_entities_result_table(rows, return_properties, include_profile))
+    )
+
+
+def _entity_return_properties(return_properties: tuple[str, ...]) -> tuple[str, ...]:
+    base = ["name", "canonical_name", "entity_type"]
+    return tuple(dict.fromkeys([*base, *return_properties]))
+
+
+def _empty_entity_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "entity_id": row.get("node_id"),
+        "node_id": row.get("node_id"),
+        "node_type": row.get("node_type"),
+        "internal_id": int(row.get("internal_id", 0)),
+        "name": None,
+        "canonical_name": None,
+        "entity_type": None,
+        "score": 0.0,
+        "rank": 0,
+        "match_type": "none",
+        "matched_text": row.get("matched_text"),
+        "lexical_score": 0.0,
+        "semantic_score": 0.0,
+        "graph_prior_score": 0.0,
+        "supporting_chunk_ids": [],
+        "selected_properties": dict(row.get("selected_properties") or {}),
+    }
+
+
+def _weighted_lexical_score(row: Mapping[str, Any], weights: Mapping[str, float]) -> float:
+    match_kind = str(row.get("match_kind", ""))
+    matched_property = str(row.get("matched_property", ""))
+    raw = float(row.get("score", 0.0))
+    if match_kind in {"exact", "normalized"} and matched_property == "canonical_name":
+        return raw * weights["canonical_phrase"]
+    if match_kind in {"exact", "normalized"} and matched_property == "aliases":
+        return raw * weights["alias_phrase"]
+    if match_kind in {"exact", "normalized"}:
+        return raw * weights["exact_phrase"]
+    return raw * weights["token_overlap"]
+
+
+def _merge_selected_properties(target: dict[str, Any], selected: Mapping[str, Any]) -> None:
+    for key, value in selected.items():
+        if value is not None:
+            target["selected_properties"][key] = value
+
+
+def _bounded_prior(value: float) -> float:
+    return float(value / (1.0 + value))
+
+
+def _supporting_chunk_ids(db: Database, internal_id: int) -> list[str]:
+    cache = getattr(db, "_supporting_chunk_cache", None)
+    if cache is None:
+        cache = {}
+        db._supporting_chunk_cache = cache  # type: ignore[attr-defined]
+    if internal_id in cache:
+        return cache[internal_id]
+    node_lookup = _node_lookup(db)
+    out: set[str] = set()
+    for relation in list_edge_stores(db.bundle):
+        if relation not in {"MENTIONS", "EVIDENCED_BY", "HAS_CHUNK"}:
+            continue
+        adjacency = _cached_typed_adjacency(
+            db,
+            edge_types=(relation,),
+            direction="both",
+            filters={},
+        )
+        for edge in adjacency.get(internal_id, []):
+            node = node_lookup.get(int(edge["next"]), _fallback_node_info(int(edge["next"])))
+            if node.get("node_type") == "Chunk":
+                out.add(str(node["node_id"]))
+    result = sorted(out)
+    cache[internal_id] = result
+    return result
+
+
+def _link_entities_result_table(
+    rows: list[dict[str, Any]],
+    return_properties: tuple[str, ...],
+    include_profile: bool,
+) -> pa.Table:
+    selected_type = pa.struct([pa.field(name, pa.string()) for name in return_properties])
+    fields = [
+        pa.field("entity_id", pa.string()),
+        pa.field("node_id", pa.string()),
+        pa.field("node_type", pa.string()),
+        pa.field("name", pa.string()),
+        pa.field("canonical_name", pa.string()),
+        pa.field("entity_type", pa.string()),
+        pa.field("score", pa.float64()),
+        pa.field("rank", pa.uint64()),
+        pa.field("match_type", pa.string()),
+        pa.field("matched_text", pa.string()),
+        pa.field("lexical_score", pa.float64()),
+        pa.field("semantic_score", pa.float64()),
+        pa.field("graph_prior_score", pa.float64()),
+        pa.field("supporting_chunk_ids", pa.list_(pa.string())),
+        pa.field("selected_properties", selected_type),
+    ]
+    if include_profile:
+        fields.append(pa.field("profile", pa.string()))
+    schema = pa.schema(fields)
+    if not rows:
+        return pa.Table.from_batches([], schema=schema)
+    arrays = [
+        pa.array([str(row.get("entity_id")) for row in rows], type=pa.string()),
+        pa.array([str(row["node_id"]) for row in rows], type=pa.string()),
+        pa.array([row["node_type"] for row in rows], type=pa.string()),
+        pa.array([row.get("name") for row in rows], type=pa.string()),
+        pa.array([row.get("canonical_name") for row in rows], type=pa.string()),
+        pa.array([row.get("entity_type") for row in rows], type=pa.string()),
+        pa.array([row["score"] for row in rows], type=pa.float64()),
+        pa.array([row["rank"] for row in rows], type=pa.uint64()),
+        pa.array([row["match_type"] for row in rows], type=pa.string()),
+        pa.array([row.get("matched_text") for row in rows], type=pa.string()),
+        pa.array([row["lexical_score"] for row in rows], type=pa.float64()),
+        pa.array([row["semantic_score"] for row in rows], type=pa.float64()),
+        pa.array([row["graph_prior_score"] for row in rows], type=pa.float64()),
+        pa.array([row["supporting_chunk_ids"] for row in rows], type=pa.list_(pa.string())),
+        pa.array(
+            [
+                {
+                    name: _string_or_none(row["selected_properties"].get(name))
+                    for name in return_properties
+                }
+                for row in rows
+            ],
+            type=selected_type,
+        ),
+    ]
+    if include_profile:
+        arrays.append(
+            pa.array([json.dumps(row["profile"], sort_keys=True) for row in rows], type=pa.string())
+        )
+    return pa.table(arrays, schema=schema)
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _evidence_search(
+    db: Database,
+    *,
+    seed_node_ids: tuple[Any, ...],
+    target_node_type: str,
+    edge_types: tuple[str, ...],
+    direction: str,
+    max_depth: int,
+    top_k: int,
+    max_paths_per_seed: int,
+    top_edges_per_node: int | None,
+    scoring: Mapping[str, float],
+    edge_weight_property: str,
+    return_properties: tuple[str, ...],
+    return_paths: bool,
+    seed_scores: Mapping[Any, float],
+    node_key_col: str,
+) -> Result:
+    if top_k < 0:
+        raise CaracalError(code="CDB-6090", message="top_k must be >= 0")
+    if max_depth < 1:
+        raise CaracalError(code="CDB-6020", message="max_depth must be >= 1")
+    if max_paths_per_seed < 1:
+        raise CaracalError(code="CDB-6020", message="max_paths_per_seed must be >= 1")
+    if direction not in {"out", "in", "both"}:
+        raise CaracalError(code="CDB-6020", message=f"invalid traversal direction: {direction!r}")
+    target_cls = db._find_class(target_node_type)
+    target_type = target_cls.local_name or _local(target_cls.iri)
+    _validate_multi_seed_return_properties(db, {target_type}, return_properties)
+    selected_type = _selected_properties_type_for_node_types(db, {target_type}, return_properties)
+    if top_k == 0 or not seed_node_ids:
+        return Result(
+            _table_to_batches(_evidence_result_table([], selected_type, return_paths=return_paths))
+        )
+
+    seed_internal_ids, _ = _resolve_graph_node_ids(db, seed_node_ids, node_key_col=node_key_col)
+    node_lookup = _node_lookup(db, node_key_col=node_key_col)
+    adjacency = _typed_adjacency(
+        db,
+        edge_types=edge_types,
+        direction=direction,
+        filters={},
+        order_by_property=edge_weight_property,
+        top_per_node=top_edges_per_node,
+    )
+    weights = {
+        "path_weight": 0.55,
+        "seed_score": 0.30,
+        "depth_penalty": 0.15,
+        **scoring,
+    }
+    by_seed: dict[int, list[dict[str, Any]]] = {}
+    for seed_value, seed_id in zip(seed_node_ids, seed_internal_ids, strict=True):
+        seed_score = _seed_score(seed_scores, seed_value, seed_id)
+        queue: list[tuple[int, int, list[int], list[Mapping[str, Any]], set[int]]] = [
+            (seed_id, 0, [seed_id], [], {seed_id})
+        ]
+        seed_rows: list[dict[str, Any]] = []
+        while queue:
+            current, depth, path_nodes, path_edges, visited = queue.pop(0)
+            if depth >= max_depth:
+                continue
+            for step in adjacency.get(current, []):
+                next_id = int(step["next"])
+                if next_id in visited:
+                    continue
+                next_nodes = [*path_nodes, next_id]
+                next_edges = [*path_edges, step]
+                next_depth = depth + 1
+                next_info = node_lookup.get(next_id, _fallback_node_info(next_id))
+                if next_info.get("node_type") == target_type and next_id != seed_id:
+                    seed_rows.append(
+                        _evidence_result_row(
+                            seed_id=seed_id,
+                            target_id=next_id,
+                            seed_score=seed_score,
+                            path_nodes=next_nodes,
+                            path_edges=next_edges,
+                            node_lookup=node_lookup,
+                            weights=weights,
+                            edge_weight_property=edge_weight_property,
+                            return_properties=return_properties,
+                        )
+                    )
+                if next_depth < max_depth:
+                    queue.append((next_id, next_depth, next_nodes, next_edges, visited | {next_id}))
+        seed_rows.sort(key=_evidence_sort_key)
+        by_seed[seed_id] = seed_rows[:max_paths_per_seed]
+
+    rows = _merge_best_evidence_targets(
+        [row for seed_rows in by_seed.values() for row in seed_rows]
+    )
+    rows.sort(key=_evidence_sort_key)
+    rows = rows[:top_k]
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = rank
+    return Result(
+        _table_to_batches(_evidence_result_table(rows, selected_type, return_paths=return_paths))
+    )
+
+
+def _seed_score(seed_scores: Mapping[Any, float], seed_value: Any, seed_id: int) -> float:
+    for key in (seed_value, str(seed_value), seed_id, str(seed_id)):
+        if key in seed_scores:
+            return float(seed_scores[key])
+    return 1.0
+
+
+def _evidence_result_row(
+    *,
+    seed_id: int,
+    target_id: int,
+    seed_score: float,
+    path_nodes: list[int],
+    path_edges: list[Mapping[str, Any]],
+    node_lookup: Mapping[int, Mapping[str, Any]],
+    weights: Mapping[str, float],
+    edge_weight_property: str,
+    return_properties: tuple[str, ...],
+) -> dict[str, Any]:
+    source = node_lookup.get(seed_id, _fallback_node_info(seed_id))
+    target = node_lookup.get(target_id, _fallback_node_info(target_id))
+    target_row = target.get("row", {})
+    selected = {
+        name: target_row.get(name) if isinstance(target_row, Mapping) else None
+        for name in return_properties
+    }
+    path_score = _path_score(path_edges, mode="product", property_name=edge_weight_property) or 0.0
+    depth = len(path_edges)
+    score = (
+        float(weights["path_weight"]) * path_score
+        + float(weights["seed_score"]) * seed_score
+        - float(weights["depth_penalty"]) * depth
+    )
+    path_node_ids = [
+        str(node_lookup.get(node, _fallback_node_info(node))["node_id"]) for node in path_nodes
+    ]
+    return {
+        "target_node_id": str(target["node_id"]),
+        "target_node_type": target["node_type"],
+        "score": float(score),
+        "rank": 0,
+        "depth": depth,
+        "source_seed_id": str(source["node_id"]),
+        "source_seed_type": source["node_type"],
+        "path_node_ids": path_node_ids,
+        "path_edge_ids": [int(edge["edge_id"]) for edge in path_edges],
+        "path_edge_types": [str(edge["edge_type"]) for edge in path_edges],
+        "path_score": float(path_score),
+        "edge_weight_product": float(path_score),
+        "selected_properties": selected,
+        "document_id": _string_or_none(
+            selected.get("document_id") or target_row.get("document_id")
+        ),
+        "text": _string_or_none(selected.get("text") or target_row.get("text")),
+        "semantic_score": seed_score if source["node_type"] == "Chunk" else 0.0,
+        "entity_score": seed_score if source["node_type"] != "Chunk" else 0.0,
+    }
+
+
+def _merge_best_evidence_targets(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        key = str(row["target_node_id"])
+        current = merged.get(key)
+        if current is None or _evidence_sort_key(row) < _evidence_sort_key(current):
+            merged[key] = row
+    return list(merged.values())
+
+
+def _evidence_sort_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        -float(row["score"]),
+        int(row["depth"]),
+        str(row["target_node_id"]),
+        str(row["source_seed_id"]),
+        tuple(row["path_edge_ids"]),
+    )
+
+
+def _evidence_result_table(
+    rows: list[dict[str, Any]],
+    selected_type: pa.StructType,
+    *,
+    return_paths: bool,
+) -> pa.Table:
+    path_fields = []
+    if return_paths:
+        path_fields = [
+            pa.field("path_node_ids", pa.list_(pa.string())),
+            pa.field("path_edge_ids", pa.list_(pa.uint64())),
+            pa.field("path_edge_types", pa.list_(pa.string())),
+        ]
+    schema = pa.schema(
+        [
+            pa.field("target_node_id", pa.string()),
+            pa.field("target_node_type", pa.string()),
+            pa.field("score", pa.float64()),
+            pa.field("rank", pa.uint64()),
+            pa.field("depth", pa.uint64()),
+            pa.field("source_seed_id", pa.string()),
+            pa.field("source_seed_type", pa.string()),
+            *path_fields,
+            pa.field("path_score", pa.float64()),
+            pa.field("edge_weight_product", pa.float64()),
+            pa.field("semantic_score", pa.float64()),
+            pa.field("entity_score", pa.float64()),
+            pa.field("document_id", pa.string()),
+            pa.field("text", pa.string()),
+            pa.field("selected_properties", selected_type),
+        ]
+    )
+    if not rows:
+        return pa.Table.from_batches([], schema=schema)
+    arrays: list[pa.Array] = [
+        pa.array([row["target_node_id"] for row in rows], type=pa.string()),
+        pa.array([row["target_node_type"] for row in rows], type=pa.string()),
+        pa.array([row["score"] for row in rows], type=pa.float64()),
+        pa.array([row["rank"] for row in rows], type=pa.uint64()),
+        pa.array([row["depth"] for row in rows], type=pa.uint64()),
+        pa.array([row["source_seed_id"] for row in rows], type=pa.string()),
+        pa.array([row["source_seed_type"] for row in rows], type=pa.string()),
+    ]
+    if return_paths:
+        arrays.extend(
+            [
+                pa.array([row["path_node_ids"] for row in rows], type=pa.list_(pa.string())),
+                pa.array([row["path_edge_ids"] for row in rows], type=pa.list_(pa.uint64())),
+                pa.array([row["path_edge_types"] for row in rows], type=pa.list_(pa.string())),
+            ]
+        )
+    arrays.extend(
+        [
+            pa.array([row["path_score"] for row in rows], type=pa.float64()),
+            pa.array([row["edge_weight_product"] for row in rows], type=pa.float64()),
+            pa.array([row["semantic_score"] for row in rows], type=pa.float64()),
+            pa.array([row["entity_score"] for row in rows], type=pa.float64()),
+            pa.array([row["document_id"] for row in rows], type=pa.string()),
+            pa.array([row["text"] for row in rows], type=pa.string()),
+            pa.array([row["selected_properties"] for row in rows], type=selected_type),
+        ]
+    )
+    return pa.table(arrays, schema=schema)
+
+
+def _graphrag_search(
+    db: Database,
+    *,
+    query_text: str,
+    query_vector: Iterable[float],
+    chunk_vector_index: str,
+    entity_text_index: str | None,
+    entity_vector_index: str | None,
+    edge_types: tuple[str, ...],
+    max_depth: int,
+    semantic_top_k: int,
+    entity_top_k: int,
+    evidence_top_k: int,
+    citation_top_k: int,
+    scoring: Mapping[str, float],
+    return_properties: tuple[str, ...],
+    include_profile: bool,
+) -> GraphRAGResult:
+    from caracaldb._version import __version__
+
+    start = time.perf_counter()
+    timings: dict[str, float] = {}
+
+    def timed(name: str, fn):
+        op_start = time.perf_counter()
+        value = fn()
+        timings[name] = (time.perf_counter() - op_start) * 1000.0
+        return value
+
+    entity_links = timed(
+        "link_entities",
+        lambda: (
+            db.link_entities(
+                query_text=query_text,
+                text_index=entity_text_index,
+                vector_index=entity_vector_index,
+                query_vector=query_vector if entity_vector_index else None,
+                top_k=entity_top_k,
+                return_properties=("name", "canonical_name", "entity_type"),
+                profile=include_profile,
+            )
+            if entity_text_index or entity_vector_index
+            else Result(_table_to_batches(_link_entities_result_table([], (), include_profile)))
+        ),
+    )
+    entity_rows = entity_links.rows()
+    entity_ids = [row["node_id"] for row in entity_rows]
+    graph_boost_weight = float(scoring.get("entity_link", 0.25))
+    graph_boosts = (
+        [{"signal": "mentions_entity", "entity_ids": entity_ids, "weight": graph_boost_weight}]
+        if entity_ids
+        else []
+    )
+    semantic_hits = timed(
+        "vector_graph_search",
+        lambda: db.vector_search(
+            index=chunk_vector_index,
+            query_vector=query_vector,
+            top_k=semantic_top_k,
+            graph_boosts=graph_boosts,
+            oversample=4 if graph_boosts else 1,
+            return_properties=return_properties,
+        ),
+    )
+    semantic_rows = semantic_hits.rows()
+    seed_ids = [row["node_id"] for row in semantic_rows] + entity_ids
+    seed_scores: dict[Any, float] = {
+        row["node_id"]: float(row["score"]) for row in semantic_rows + entity_rows
+    }
+    evidence = timed(
+        "evidence_search",
+        lambda: db.evidence_search(
+            seed_node_ids=seed_ids,
+            target_node_type="Chunk",
+            edge_types=edge_types,
+            direction="both",
+            max_depth=max_depth,
+            top_k=evidence_top_k,
+            max_paths_per_seed=max(1, evidence_top_k),
+            scoring=scoring,
+            edge_weight_property="weight",
+            return_properties=return_properties,
+            return_paths=True,
+            seed_scores=seed_scores,
+        ),
+    )
+    evidence_chunks = _graphrag_evidence_result(evidence.rows(), return_properties)
+    paths = _graphrag_paths_result(evidence.rows())
+    citation_candidates = _citation_candidates_result(evidence_chunks.rows(), citation_top_k)
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    profile = {
+        "caracaldb_version": __version__,
+        "logical_plan": "GraphRAGSearch(link_entities -> vector_graph_search -> evidence_search)",
+        "physical_plan": "NativeGraphRAGSearch",
+        "operators": ["link_entities", "vector_graph_search", "evidence_search"],
+        "indexes_used": [item for item in (entity_text_index, entity_vector_index) if item],
+        "vector_index_used": chunk_vector_index,
+        "text_index_used": entity_text_index,
+        "node_rows_scanned": 0,
+        "edge_rows_scanned": 0,
+        "semantic_candidate_count": len(semantic_rows),
+        "entity_candidate_count": len(entity_rows),
+        "path_candidate_count": len(evidence.rows()),
+        "evidence_result_count": evidence_chunks.arrow().num_rows,
+        "result_count": evidence_chunks.arrow().num_rows,
+        "elapsed_ms": elapsed_ms,
+        "operator_timings": timings,
+        "fallback_flags": [],
+    }
+    return GraphRAGResult(
+        entity_links=entity_links,
+        semantic_hits=semantic_hits,
+        evidence_chunks=evidence_chunks,
+        citation_candidates=citation_candidates,
+        paths=paths,
+        profile=profile,
+    )
+
+
+def _graphrag_evidence_result(
+    evidence_rows: list[dict[str, Any]],
+    return_properties: tuple[str, ...],
+) -> Result:
+    merged: dict[str, dict[str, Any]] = {}
+    for row in evidence_rows:
+        chunk_id = str(row["target_node_id"])
+        current = merged.get(chunk_id)
+        if current is None or float(row["score"]) > float(current["score"]):
+            selected = dict(row.get("selected_properties") or {})
+            merged[chunk_id] = {
+                "chunk_id": chunk_id,
+                "document_id": row.get("document_id"),
+                "score": float(row["score"]),
+                "rank": 0,
+                "semantic_score": float(row.get("semantic_score", 0.0)),
+                "entity_score": float(row.get("entity_score", 0.0)),
+                "path_score": float(row.get("path_score", 0.0)),
+                "depth": int(row["depth"]),
+                "source_seed_ids": [str(row["source_seed_id"])],
+                "path_node_ids": list(row.get("path_node_ids") or []),
+                "path_edge_types": list(row.get("path_edge_types") or []),
+                "text": row.get("text"),
+                "selected_properties": selected,
+            }
+        else:
+            current["source_seed_ids"] = sorted(
+                {*current["source_seed_ids"], str(row["source_seed_id"])}
+            )
+    rows = list(merged.values())
+    rows.sort(key=lambda row: (-float(row["score"]), str(row["chunk_id"])))
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = rank
+    return Result(_table_to_batches(_graphrag_evidence_table(rows, return_properties)))
+
+
+def _graphrag_evidence_table(
+    rows: list[dict[str, Any]],
+    return_properties: tuple[str, ...],
+) -> pa.Table:
+    selected_type = pa.struct([pa.field(name, pa.string()) for name in return_properties])
+    schema = pa.schema(
+        [
+            pa.field("chunk_id", pa.string()),
+            pa.field("document_id", pa.string()),
+            pa.field("score", pa.float64()),
+            pa.field("rank", pa.uint64()),
+            pa.field("semantic_score", pa.float64()),
+            pa.field("entity_score", pa.float64()),
+            pa.field("path_score", pa.float64()),
+            pa.field("depth", pa.uint64()),
+            pa.field("source_seed_ids", pa.list_(pa.string())),
+            pa.field("path_node_ids", pa.list_(pa.string())),
+            pa.field("path_edge_types", pa.list_(pa.string())),
+            pa.field("text", pa.string()),
+            pa.field("selected_properties", selected_type),
+        ]
+    )
+    if not rows:
+        return pa.Table.from_batches([], schema=schema)
+    return pa.table(
+        [
+            pa.array([row["chunk_id"] for row in rows], type=pa.string()),
+            pa.array([row["document_id"] for row in rows], type=pa.string()),
+            pa.array([row["score"] for row in rows], type=pa.float64()),
+            pa.array([row["rank"] for row in rows], type=pa.uint64()),
+            pa.array([row["semantic_score"] for row in rows], type=pa.float64()),
+            pa.array([row["entity_score"] for row in rows], type=pa.float64()),
+            pa.array([row["path_score"] for row in rows], type=pa.float64()),
+            pa.array([row["depth"] for row in rows], type=pa.uint64()),
+            pa.array([row["source_seed_ids"] for row in rows], type=pa.list_(pa.string())),
+            pa.array([row["path_node_ids"] for row in rows], type=pa.list_(pa.string())),
+            pa.array([row["path_edge_types"] for row in rows], type=pa.list_(pa.string())),
+            pa.array([row["text"] for row in rows], type=pa.string()),
+            pa.array(
+                [
+                    {
+                        name: _string_or_none(row["selected_properties"].get(name))
+                        for name in return_properties
+                    }
+                    for row in rows
+                ],
+                type=selected_type,
+            ),
+        ],
+        schema=schema,
+    )
+
+
+def _graphrag_paths_result(evidence_rows: list[dict[str, Any]]) -> Result:
+    selected_type = pa.struct([])
+    rows = [
+        {
+            "source_node_id": row["source_seed_id"],
+            "source_node_type": row["source_seed_type"],
+            "target_node_id": row["target_node_id"],
+            "target_node_type": row["target_node_type"],
+            "depth": row["depth"],
+            "path_node_ids": row.get("path_node_ids", []),
+            "path_edge_ids": row.get("path_edge_ids", []),
+            "path_edge_types": row.get("path_edge_types", []),
+            "path_score": row["path_score"],
+            "score": row["score"],
+            "rank": row["rank"],
+            "selected_properties": {},
+        }
+        for row in evidence_rows
+    ]
+    return Result(_table_to_batches(_multi_seed_paths_result_table(rows, selected_type)))
+
+
+def _citation_candidates_result(rows: list[dict[str, Any]], top_k: int) -> Result:
+    candidates = rows[: max(0, top_k)]
+    schema = pa.schema(
+        [
+            pa.field("chunk_id", pa.string()),
+            pa.field("document_id", pa.string()),
+            pa.field("confidence", pa.float64()),
+            pa.field("rank", pa.uint64()),
+            pa.field("supporting_entity_ids", pa.list_(pa.string())),
+            pa.field("supporting_path", pa.list_(pa.string())),
+            pa.field("reason", pa.string()),
+        ]
+    )
+    if not candidates:
+        return Result(_table_to_batches(pa.Table.from_batches([], schema=schema)))
+    return Result(
+        _table_to_batches(
+            pa.table(
+                [
+                    pa.array([row["chunk_id"] for row in candidates], type=pa.string()),
+                    pa.array([row["document_id"] for row in candidates], type=pa.string()),
+                    pa.array([row["score"] for row in candidates], type=pa.float64()),
+                    pa.array([idx for idx, _ in enumerate(candidates, start=1)], type=pa.uint64()),
+                    pa.array(
+                        [row["source_seed_ids"] for row in candidates], type=pa.list_(pa.string())
+                    ),
+                    pa.array(
+                        [row["path_node_ids"] for row in candidates], type=pa.list_(pa.string())
+                    ),
+                    pa.array(["ranked evidence path" for _ in candidates], type=pa.string()),
+                ],
+                schema=schema,
+            )
+        )
+    )
 
 
 def _mark_node_indexes_stale(db: Database, node_type: str) -> None:
@@ -3853,6 +4872,39 @@ def _typed_adjacency(
         if top_per_node is not None:
             adjacency[node_id] = steps[:top_per_node]
     return adjacency
+
+
+def _cached_typed_adjacency(
+    db: Database,
+    *,
+    edge_types: tuple[str, ...],
+    direction: str,
+    filters: Mapping[str, Any],
+    order_by_property: str | None = None,
+    top_per_node: int | None = None,
+) -> dict[int, list[dict[str, Any]]]:
+    if filters or order_by_property is not None or top_per_node is not None:
+        return _typed_adjacency(
+            db,
+            edge_types=edge_types,
+            direction=direction,
+            filters=filters,
+            order_by_property=order_by_property,
+            top_per_node=top_per_node,
+        )
+    key = (tuple(edge_types), direction)
+    cache = getattr(db, "_typed_adjacency_cache", None)
+    if cache is None:
+        cache = {}
+        db._typed_adjacency_cache = cache  # type: ignore[attr-defined]
+    if key not in cache:
+        cache[key] = _typed_adjacency(
+            db,
+            edge_types=edge_types,
+            direction=direction,
+            filters=filters,
+        )
+    return cache[key]
 
 
 def _edge_row_matches_filters(row: Mapping[str, Any], filters: Mapping[str, Any]) -> bool:
@@ -6208,6 +7260,7 @@ def _escape_turtle_literal(value: str) -> str:
 __all__ = [
     "Connection",
     "Database",
+    "GraphRAGResult",
     "NodeQuery",
     "ResourceRef",
     "Result",
