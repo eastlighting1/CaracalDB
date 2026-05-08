@@ -3131,14 +3131,14 @@ def _load_text_index_data(db: Database, meta: Mapping[str, Any]) -> dict[str, An
             message=f"corrupt text index data: {path}",
         ) from exc
     data = dict(payload)
-    
+
     import pyroaring
-    
+
     exact_bitmaps: dict[str, pyroaring.BitMap] = {}
     for k, v in data.get("exact", {}).items():
         exact_bitmaps[k] = pyroaring.BitMap(v)
     data["_exact_bitmaps"] = exact_bitmaps
-    
+
     token_bitmaps: dict[str, pyroaring.BitMap] = {}
     for k, v in data.get("tokens", {}).items():
         token_bitmaps[k] = pyroaring.BitMap(v)
@@ -3164,19 +3164,19 @@ def _text_candidate_entries(
     import pyroaring
 
     query_tokens = _text_tokens(normalized_query)
-    
+
     exact_bitmaps = index_data.get("_exact_bitmaps", {})
     token_bitmaps = index_data.get("_token_bitmaps", {})
-    
+
     candidate_bitmap = pyroaring.BitMap()
     exact_match = exact_bitmaps.get(normalized_query)
     if exact_match is not None:
         candidate_bitmap |= exact_match
-        
+
     for token in query_tokens:
         if token in token_bitmaps:
             candidate_bitmap |= token_bitmaps[token]
-            
+
     # Include prefix matches
     for known_text, bitmap in exact_bitmaps.items():
         if known_text.startswith(normalized_query):
@@ -3189,7 +3189,7 @@ def _text_candidate_entries(
     entries_by_id: dict[int, list[dict[str, Any]]] = {}
     for internal_id in candidate_bitmap:
         entries_by_id[internal_id] = list(all_entries_by_id.get(internal_id, []))
-        
+
     return entries_by_id
 
 
@@ -4101,7 +4101,7 @@ def _graphrag_search(
         semantic_table["node_id"].to_pylist() if "node_id" in semantic_table.column_names else []
     )
     seed_ids = semantic_ids + entity_ids
-    
+
     seed_scores: dict[Any, float] = {}
     if "node_id" in semantic_table.column_names and "score" in semantic_table.column_names:
         for node_id, score in zip(semantic_ids, semantic_table["score"].to_pylist(), strict=False):
@@ -4109,7 +4109,7 @@ def _graphrag_search(
     if "node_id" in entity_table.column_names and "score" in entity_table.column_names:
         for node_id, score in zip(entity_ids, entity_table["score"].to_pylist(), strict=False):
             seed_scores[node_id] = float(score)
-            
+
     evidence = timed(
         "evidence_search",
         lambda: db.evidence_search(
