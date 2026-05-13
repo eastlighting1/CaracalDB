@@ -19,7 +19,7 @@ import shutil
 import tempfile
 import time
 from collections import deque
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from numbers import Integral
 from pathlib import Path
@@ -1304,6 +1304,102 @@ class Database:
 
         return _list_property_indexes(self)
 
+    def query_nodes(
+        self,
+        label: str,
+        where: str,
+        *,
+        return_col: str = "node_id",
+    ) -> np.ndarray:
+        """Return node ids satisfying a simple predicate.
+
+        Equality predicates use a matching property index when one exists and
+        fall back to Arrow filtering otherwise.
+        """
+
+        return _query_nodes(self, label, where, return_col=return_col)
+
+    def sample_gnn_subgraph(
+        self,
+        seeds: Sequence[int] | np.ndarray,
+        fanouts: Sequence[int],
+        edge_types: Sequence[str],
+        *,
+        direction: str = "out",
+        node_key_col: str = "node_id",
+        id_space: str = "external",
+        replace: bool = False,
+        seed: int | None = None,
+        strategy: str = "uniform",
+        max_nodes: int | None = None,
+        max_edges: int | None = None,
+        return_format: str = "pyg",
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Sample a PyG-style GNN subgraph from stored graph topology."""
+
+        return _sample_gnn_subgraph(
+            self,
+            seeds,
+            fanouts,
+            edge_types,
+            direction=direction,
+            node_key_col=node_key_col,
+            id_space=id_space,
+            replace=replace,
+            seed=seed,
+            strategy=strategy,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+            return_format=return_format,
+        )
+
+    def neighbor_loader(
+        self,
+        input_nodes: Sequence[int] | np.ndarray | str | None,
+        fanouts: Sequence[int],
+        edge_types: Sequence[str],
+        *,
+        batch_size: int,
+        shuffle: bool = True,
+        filter: str | None = None,
+        direction: str = "out",
+        node_key_col: str = "node_id",
+        id_space: str = "external",
+        replace: bool = False,
+        seed: int | None = None,
+        strategy: str = "uniform",
+        warm_start: bool = False,
+        num_workers: int = 0,
+        prefetch_factor: int = 2,
+        return_format: str = "pyg",
+    ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        """Yield batched GNN neighborhood samples.
+
+        The Python reference loader is intentionally process-local; accepting
+        ``num_workers`` keeps the API stable while avoiding pickled live DB
+        handles in Windows spawn mode.
+        """
+
+        return _GnnNeighborLoader(
+            self,
+            input_nodes,
+            fanouts,
+            edge_types,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            filter=filter,
+            direction=direction,
+            node_key_col=node_key_col,
+            id_space=id_space,
+            replace=replace,
+            seed=seed,
+            strategy=strategy,
+            warm_start=warm_start,
+            num_workers=num_workers,
+            prefetch_factor=prefetch_factor,
+            return_format=return_format,
+        )
+
     def create_text_index(
         self,
         *,
@@ -1480,6 +1576,9 @@ class Database:
             "batch_upsert": True,
             "property_index": True,
             "text_index": True,
+            "gnn.sample_gnn_subgraph": True,
+            "gnn.neighbor_loader": True,
+            "gnn.query_nodes": True,
             "arrow.results": True,
         }
 
@@ -6736,6 +6835,329 @@ def _degree_array(ids: list[int], reader: CsrReader | None) -> np.ndarray:
     if bool(valid.any()):
         degrees[valid] = reader.degrees(seed_ids[valid]).astype(np.uint64)
     return degrees
+
+
+def _query_nodes(db: Database, label: str, where: str, *, return_col: str) -> np.ndarray:
+    import numpy as np
+
+    cls = db._find_class(label)
+    local_name = cls.local_name or _local(cls.iri)
+    table = _node_table_for_local(db, local_name)
+    if return_col not in table.column_names:
+        raise CaracalError(
+            code="CDB-6020",
+            message=f"query_nodes return column missing on {label!r}: {return_col!r}",
+        )
+    predicate = where.strip()
+    if predicate.lower() in {"", "true", "*"}:
+        result = table[return_col].to_pylist()
+        return np.asarray(result)
+    equality = _parse_simple_equality(predicate)
+    if equality is None:
+        raise CaracalError(
+            code="CDB-6020",
+            message="query_nodes currently supports simple equality predicates",
+            hint='use syntax like "split = \'train\'" or "label == 1"',
+        )
+    property_name, value = equality
+    if property_name not in table.column_names:
+        raise CaracalError(
+            code="CDB-6020",
+            message=f"query_nodes predicate column missing on {label!r}: {property_name!r}",
+        )
+    ids_from_index: list[int] | None = None
+    index_id_column: str | None = None
+    for meta in _load_property_index_manifest(db).values():
+        if (
+            meta.get("kind") == "node"
+            and meta.get("node_type") == local_name
+            and meta.get("property") == property_name
+        ):
+            ids_from_index = _property_index_lookup_ids(db, meta, value)
+            index_id_column = _property_index_id_column(meta, table)
+            break
+    if ids_from_index is not None and index_id_column is not None:
+        if not ids_from_index:
+            return np.asarray([], dtype=np.uint64 if return_col != "node_id" else object)
+        mask = pc.is_in(
+            table[index_id_column],
+            value_set=pa.array(ids_from_index, type=table.schema.field(index_id_column).type),
+        )
+        filtered = table.filter(mask)
+    else:
+        scalar = pa.scalar(value, type=table.schema.field(property_name).type)
+        filtered = table.filter(pc.equal(table[property_name], scalar))
+    return np.asarray(filtered[return_col].to_pylist())
+
+
+def _parse_simple_equality(where: str) -> tuple[str, Any] | None:
+    match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:==|=)\s*(.+?)\s*", where)
+    if match is None:
+        return None
+    raw_value = match.group(2)
+    try:
+        value = py_ast.literal_eval(raw_value)
+    except (ValueError, SyntaxError):
+        lowered = raw_value.lower()
+        if lowered == "true":
+            value = True
+        elif lowered == "false":
+            value = False
+        else:
+            value = raw_value.strip("\"'")
+    return match.group(1), value
+
+
+class _GnnNeighborLoader:
+    def __init__(
+        self,
+        db: Database,
+        input_nodes: Sequence[int] | np.ndarray | str | None,
+        fanouts: Sequence[int],
+        edge_types: Sequence[str],
+        *,
+        batch_size: int,
+        shuffle: bool,
+        filter: str | None,
+        direction: str,
+        node_key_col: str,
+        id_space: str,
+        replace: bool,
+        seed: int | None,
+        strategy: str,
+        warm_start: bool,
+        num_workers: int,
+        prefetch_factor: int,
+        return_format: str,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if num_workers < 0:
+            raise ValueError("num_workers must be >= 0")
+        if prefetch_factor <= 0:
+            raise ValueError("prefetch_factor must be positive")
+        self._db = db
+        self._fanouts = tuple(int(item) for item in fanouts)
+        self._edge_types = tuple(edge_types)
+        self._batch_size = batch_size
+        self._shuffle = shuffle
+        self._direction = direction
+        self._node_key_col = node_key_col
+        self._id_space = id_space
+        self._replace = replace
+        self._seed = seed
+        self._strategy = strategy
+        self._return_format = return_format
+        self._seeds = _resolve_loader_input_nodes(
+            db,
+            input_nodes,
+            filter=filter,
+            node_key_col=node_key_col,
+            id_space=id_space,
+        )
+        if warm_start:
+            _warm_gnn_readers(db, self._edge_types, direction)
+
+    def __iter__(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        import numpy as np
+
+        seeds = np.asarray(self._seeds).copy()
+        rng = np.random.default_rng(self._seed)
+        if self._shuffle and seeds.size:
+            rng.shuffle(seeds)
+        for start in range(0, seeds.size, self._batch_size):
+            chunk = seeds[start : start + self._batch_size]
+            yield _sample_gnn_subgraph(
+                self._db,
+                chunk,
+                self._fanouts,
+                self._edge_types,
+                direction=self._direction,
+                node_key_col=self._node_key_col,
+                id_space=self._id_space,
+                replace=self._replace,
+                seed=None if self._seed is None else int(self._seed) + start,
+                strategy=self._strategy,
+                max_nodes=None,
+                max_edges=None,
+                return_format=self._return_format,
+            )
+
+
+def _resolve_loader_input_nodes(
+    db: Database,
+    input_nodes: Sequence[int] | np.ndarray | str | None,
+    *,
+    filter: str | None,
+    node_key_col: str,
+    id_space: str,
+) -> np.ndarray:
+    import numpy as np
+
+    if isinstance(input_nodes, str):
+        return _query_nodes(db, input_nodes, filter or "true", return_col=node_key_col)
+    if input_nodes is None:
+        return _all_graph_node_ids(db, node_key_col=node_key_col, id_space=id_space)
+    return np.asarray(input_nodes)
+
+
+def _all_graph_node_ids(db: Database, *, node_key_col: str, id_space: str) -> np.ndarray:
+    import numpy as np
+
+    values: list[Any] = []
+    for class_name in list_node_stores(db.bundle):
+        table = _node_table_for_local(db, class_name)
+        column = _vector_id_column(table) if id_space == "internal" else node_key_col
+        if column in table.column_names:
+            values.extend(table[column].to_pylist())
+    return np.asarray(values)
+
+
+def _warm_gnn_readers(db: Database, edge_types: Sequence[str], direction: str) -> None:
+    for edge_type in edge_types:
+        _readers_for_relation(db, edge_type, direction)
+
+
+def _sample_gnn_subgraph(
+    db: Database,
+    seeds: Sequence[int] | np.ndarray,
+    fanouts: Sequence[int],
+    edge_types: Sequence[str],
+    *,
+    direction: str,
+    node_key_col: str,
+    id_space: str,
+    replace: bool,
+    seed: int | None,
+    strategy: str,
+    max_nodes: int | None,
+    max_edges: int | None,
+    return_format: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    import numpy as np
+
+    if return_format != "pyg":
+        raise ValueError("sample_gnn_subgraph currently supports return_format='pyg'")
+    if id_space not in {"external", "internal"}:
+        raise ValueError("id_space must be 'external' or 'internal'")
+    if direction not in {"out", "in", "both"}:
+        raise ValueError("direction must be 'out', 'in', or 'both'")
+    if strategy not in {"uniform", "first", "all"}:
+        raise ValueError("strategy must be one of 'uniform', 'first', or 'all'")
+    if not fanouts:
+        raise ValueError("fanouts must be non-empty")
+    if not edge_types:
+        raise ValueError("edge_types must be non-empty")
+    fanout_values = [int(item) for item in fanouts]
+    if any(item < 0 for item in fanout_values):
+        raise ValueError("fanouts must be >= 0")
+    if max_nodes is not None and max_nodes <= 0:
+        raise ValueError("max_nodes must be positive when provided")
+    if max_edges is not None and max_edges < 0:
+        raise ValueError("max_edges must be >= 0 when provided")
+
+    seed_ids = _gnn_seed_ids(db, seeds, node_key_col=node_key_col, id_space=id_space)
+    ordered_nodes = list(dict.fromkeys(int(item) for item in seed_ids.tolist()))
+    if max_nodes is not None:
+        ordered_nodes = ordered_nodes[:max_nodes]
+    frontier = np.asarray(ordered_nodes, dtype=np.uint64)
+    edge_pairs: list[tuple[int, int]] = []
+    rng = np.random.default_rng(seed)
+
+    for fanout in fanout_values:
+        if frontier.size == 0:
+            break
+        next_chunks: list[np.ndarray] = []
+        for edge_type in edge_types:
+            readers = _gnn_relation_readers(db, edge_type, direction)
+            for reader, normalize_incoming in readers:
+                valid_frontier = frontier[frontier < reader.num_vertices]
+                if valid_frontier.size == 0:
+                    continue
+                src_rep, dst = reader.batch_neighbors(
+                    valid_frontier,
+                    fanout=fanout,
+                    replace=replace,
+                    seed=rng,
+                    strategy=strategy,
+                )
+                if dst.size == 0:
+                    continue
+                if normalize_incoming:
+                    src_global = dst
+                    dst_global = src_rep
+                else:
+                    src_global = src_rep
+                    dst_global = dst
+                for src, out_dst in zip(src_global.tolist(), dst_global.tolist(), strict=True):
+                    if max_edges is not None and len(edge_pairs) >= max_edges:
+                        break
+                    edge_pairs.append((int(src), int(out_dst)))
+                    if max_nodes is None or len(ordered_nodes) < max_nodes:
+                        if int(src) not in ordered_nodes:
+                            ordered_nodes.append(int(src))
+                        if int(out_dst) not in ordered_nodes:
+                            ordered_nodes.append(int(out_dst))
+                next_hop = src_global if normalize_incoming else dst_global
+                next_chunks.append(next_hop.astype(np.uint64, copy=False))
+                if max_edges is not None and len(edge_pairs) >= max_edges:
+                    break
+            if max_edges is not None and len(edge_pairs) >= max_edges:
+                break
+        if not next_chunks:
+            break
+        next_frontier = np.unique(np.concatenate(next_chunks))
+        if max_nodes is not None:
+            allowed = set(ordered_nodes)
+            next_frontier = np.asarray(
+                [item for item in next_frontier.tolist() if int(item) in allowed],
+                dtype=np.uint64,
+            )
+        frontier = next_frontier
+
+    n_id = np.asarray(ordered_nodes, dtype=np.uint64)
+    local = {node: idx for idx, node in enumerate(ordered_nodes)}
+    local_edges = [
+        (local[src], local[dst]) for src, dst in edge_pairs if src in local and dst in local
+    ]
+    if not local_edges:
+        edge_index = np.empty((2, 0), dtype=np.int64)
+    else:
+        edge_index = np.asarray(local_edges, dtype=np.int64).T
+    return edge_index, n_id
+
+
+def _gnn_seed_ids(
+    db: Database,
+    seeds: Sequence[int] | np.ndarray,
+    *,
+    node_key_col: str,
+    id_space: str,
+) -> np.ndarray:
+    import numpy as np
+
+    seed_array = np.asarray(seeds)
+    if seed_array.size == 0:
+        return np.empty(0, dtype=np.uint64)
+    if id_space == "internal":
+        return seed_array.astype(np.uint64, copy=False)
+    id_map = _external_id_map(db, key_col=node_key_col)
+    resolved = [_resolve_graph_node_id(id_map, item, node_key_col) for item in seed_array.tolist()]
+    return np.asarray(resolved, dtype=np.uint64)
+
+
+def _gnn_relation_readers(
+    db: Database,
+    edge_type: str,
+    direction: str,
+) -> list[tuple[CsrReader, bool]]:
+    forward, reverse = _readers_for_relation(db, edge_type, direction)
+    readers: list[tuple[CsrReader, bool]] = []
+    if direction in {"out", "both"} and forward is not None:
+        readers.append((forward, False))
+    if direction in {"in", "both"} and reverse is not None:
+        readers.append((reverse, True))
+    return readers
 
 
 def _neighbor_ids(

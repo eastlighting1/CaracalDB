@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-05-13
+
+### Added
+
+- Added official `Database.sample_gnn_subgraph`, `Database.neighbor_loader`,
+  and `Database.query_nodes` APIs for DB-owned GNN seed selection and
+  PyG-style `(edge_index, n_id)` sampling output.
+- Added CSR/CSC-backed fanout sampling options on `CsrReader.batch_neighbors`,
+  including per-source fanout, deterministic seeded uniform sampling,
+  `strategy="first"`, `strategy="all"`, and replacement sampling.
+- Added regression coverage for sparse and isolated seed handling, local/global
+  id mapping, filtered seed batching, deterministic sampling, and replacement
+  behavior.
+
+### Changed
+
+- Updated `NeighborSampleOperator` to share the same documented CSR sampling
+  semantics used by the public GNN APIs.
+- Refreshed the PyG neighbor-loader guide to document the official
+  CaracalDB-owned GNN sampling interface.
+
 ## [0.3.0] - 2026-05-09
 
 ### Added

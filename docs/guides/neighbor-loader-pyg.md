@@ -18,16 +18,64 @@ GNN training wants layered fan-out from seed nodes. CaracalDB represents the gra
 
 ## Steps
 
-1. Build CSR files for the edge types you want to sample.
-2. Use `NeighborSampleOperator` with one or more `CsrReader` instances.
-3. Convert sampled node and edge tables into `Subgraph`.
-4. Use the PyG adapter when `torch` and `torch_geometric` are available.
+1. Insert node and edge tables with stable `node_id` values.
+2. Call `Database.sample_gnn_subgraph(...)` for one mini-batch or
+   `Database.neighbor_loader(...)` for repeated batches.
+3. Pass the returned `(edge_index, n_id)` pair to your training loop.
+4. Gather features for `n_id` from your feature layer or Lynxes.
 
 ```text
-seed nodes -> CSR neighbor sample -> Subgraph -> PyG Data
+seed nodes -> CSR/CSC neighbor sample -> (edge_index, n_id) -> PyG Data
 ```
 
 Keep the CaracalDB node id as the canonical key through every stage. Framework tensors can be reindexed for training, but labels, masks, and sampled edges should keep a reversible mapping back to stored node ids.
+
+## Official API
+
+```python
+with cdb.connect("citation") as db:
+    edge_index, n_id = db.sample_gnn_subgraph(
+        seeds=["paper/1", "paper/2"],
+        fanouts=[15, 10],
+        edge_types=["CITES"],
+        seed=42,
+    )
+```
+
+`edge_index` has shape `(2, E)` and uses local node ids into `n_id`. `n_id`
+contains the global CaracalDB ids for every sampled node and always includes
+the seed nodes, including isolated seeds.
+
+For batched training:
+
+```python
+loader = db.neighbor_loader(
+    "Paper",
+    fanouts=[15, 10],
+    edge_types=["CITES"],
+    batch_size=1024,
+    filter="split = 'train'",
+    seed=42,
+)
+
+for edge_index, n_id in loader:
+    train_step(edge_index, n_id)
+```
+
+`query_nodes(label, where)` can be used directly when you want to materialize
+filtered seed ids. Simple equality predicates use property indexes when a
+matching index exists and otherwise fall back to Arrow filtering.
+
+## Sampling Semantics
+
+- Fan-out applies per source node for every layer.
+- `strategy="uniform"` is the default and samples without replacement unless
+  `replace=True`.
+- `strategy="first"` is the explicit deterministic first-neighbor fast path.
+- `strategy="all"` or `fanout=0` expands all neighbors.
+- `seed=...` makes uniform sampling and loader shuffling deterministic.
+- `direction="out"`, `"in"`, and `"both"` use CSR/CSC readers and normalize
+  output edges as stored graph directions.
 
 ## Verification
 

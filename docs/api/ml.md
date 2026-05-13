@@ -7,54 +7,73 @@ engine_status: python-reference; rust-engine-planned
 
 # Machine Learning
 
-CaracalDB exposes Arrow-native ML surfaces: the `NeighborLoader` for GNN mini-batch sampling,
-`Subgraph` as the exchange container, and `OnlineFeatureView` for low-latency point lookups
-during training or inference.
+CaracalDB exposes Arrow-native ML surfaces: database-owned GNN sampling APIs,
+`Subgraph` as the exchange container for framework adapters, and
+`OnlineFeatureView` for low-latency point lookups during training or inference.
 
 ---
 
-## Neighbor Sampling & Subgraph
+## GNN Sampling
 
-`NeighborLoader` is a CaracalDB-native sampler that runs inside the embedded process, avoiding IPC
-overhead. It produces `Subgraph` objects — pure Arrow containers mapping directly to the `Data` /
-`HeteroData` objects expected by PyG and DGL.
+`Database.sample_gnn_subgraph` samples layered neighborhoods directly from
+CaracalDB-owned CSR/CSC graph indexes. It returns PyG-style `(edge_index,
+n_id)` arrays: `edge_index` uses local ids into `n_id`, while `n_id` contains
+global CaracalDB node ids.
 
 ```python
 import caracaldb as cdb
-from caracaldb.ml import NeighborLoader, NeighborLoaderConfig
 
 with cdb.connect("citation") as db:
-    config = NeighborLoaderConfig(
-        seed_class="Paper",
-        num_neighbors=[15, 10],   # 2-hop fan-out
-        batch_size=64,
+    edge_index, n_id = db.sample_gnn_subgraph(
+        seeds=["paper/1", "paper/2"],
+        fanouts=[15, 10],
+        edge_types=["CITES"],
+        seed=42,
     )
-    loader = NeighborLoader(db, config)
-
-    for subgraph in loader:
-        # subgraph.nodes: dict[str, pa.Table]
-        # subgraph.edges: dict[str, pa.Table]
-        print(subgraph.nodes["Paper"].num_rows)
 ```
 
-### Exporting to frameworks
+`Database.neighbor_loader` wraps the same sampler for mini-batch iteration and
+can materialize seed ids from a node label plus a simple indexed predicate.
 
 ```python
-# PyG
-import torch
-from torch_geometric.data import Data
+with cdb.connect("citation") as db:
+    loader = db.neighbor_loader(
+        "Paper",
+        fanouts=[15, 10],
+        edge_types=["CITES"],
+        batch_size=64,
+        filter="split = 'train'",
+        seed=42,
+    )
 
-sg = next(iter(loader))
-paper_table = sg.nodes["Paper"]
-x = torch.from_numpy(paper_table.column("embedding").to_pylist())
+    for edge_index, n_id in loader:
+        print(edge_index.shape, n_id.shape)
 ```
+
+### Sampling semantics
+
+- Fan-out applies per source node per layer.
+- `strategy="uniform"` is the default and samples without replacement unless
+  `replace=True`.
+- `strategy="first"` provides explicit deterministic first-neighbor truncation.
+- `strategy="all"` or `fanout=0` expands all neighbors.
+- `seed=...` makes uniform sampling and loader shuffling deterministic.
+- Sparse graphs and isolated seed nodes return valid empty `edge_index` arrays
+  while preserving seeds in `n_id`.
+
+### Subgraph adapters
+
+The lower-level `caracaldb.ml.Subgraph` container and PyG/DGL/jraph adapters
+remain available for workloads that already assemble Arrow-backed node and
+edge tables manually.
 
 ### Key objects
 
 | Name | Description |
 |---|---|
-| `NeighborLoader` | Iterable sampler that yields mini-batch `Subgraph` objects. |
-| `NeighborLoaderConfig` | Fan-out, seed class, batch size, and feature column configuration. |
+| `Database.sample_gnn_subgraph` | One-shot GNN neighborhood sampler returning `(edge_index, n_id)`. |
+| `Database.neighbor_loader` | Iterable mini-batch sampler over explicit or filtered seed nodes. |
+| `Database.query_nodes` | Predicate-based seed selection with property-index acceleration when available. |
 | `Subgraph` | Arrow-backed container: node tables, edge tables, and seed ids. |
 
 ### Reference

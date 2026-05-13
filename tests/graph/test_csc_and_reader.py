@@ -73,3 +73,31 @@ def test_csr_reader_degrees(tmp_path: Path) -> None:
     fwd_path, _ = _seed(tmp_path)
     r = CsrReader(fwd_path)
     assert r.degrees().tolist() == [2, 1, 2]
+
+
+def test_csr_reader_batch_neighbors_supports_sampling_strategies(tmp_path: Path) -> None:
+    fwd_path, _ = _seed(tmp_path)
+    r = CsrReader(fwd_path)
+    seeds = np.array([0, 2], dtype=np.uint64)
+
+    first_src, first_dst = r.batch_neighbors(seeds, fanout=1, strategy="first")
+    assert first_src.tolist() == [0, 2]
+    assert first_dst.tolist() == [1, 0]
+
+    left = r.batch_neighbors(seeds, fanout=1, seed=11, strategy="uniform")
+    right = r.batch_neighbors(seeds, fanout=1, seed=11, strategy="uniform")
+    assert left[0].tolist() == right[0].tolist()
+    assert left[1].tolist() == right[1].tolist()
+
+
+def test_csr_reader_batch_neighbors_replace_can_repeat(tmp_path: Path) -> None:
+    fwd_path, _ = _seed(tmp_path)
+    r = CsrReader(fwd_path)
+    src, dst = r.batch_neighbors(
+        np.array([1], dtype=np.uint64),
+        fanout=3,
+        replace=True,
+        seed=0,
+    )
+    assert src.tolist() == [1, 1, 1]
+    assert dst.tolist() == [2, 2, 2]

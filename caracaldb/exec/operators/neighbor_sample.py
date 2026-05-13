@@ -35,6 +35,8 @@ class NeighborSampleOperator(PhysicalOperator):
         layers: Sequence[int],
         seed_column: str = "nid",
         seed: int = 0,
+        replace: bool = False,
+        strategy: str = "uniform",
     ) -> None:
         super().__init__()
         if not edge_readers:
@@ -43,6 +45,11 @@ class NeighborSampleOperator(PhysicalOperator):
             raise CaracalError(code="CDB-6100", message="layers must be non-empty")
         if any(f < 0 for f in layers):
             raise CaracalError(code="CDB-6100", message="fan-out values must be >= 0")
+        if strategy not in {"uniform", "first", "all"}:
+            raise CaracalError(
+                code="CDB-6100",
+                message=f"unsupported neighbor sampling strategy: {strategy!r}",
+            )
         self._child = child
         # Stable iteration order for determinism.
         self._readers = list(edge_readers.items())
@@ -50,6 +57,8 @@ class NeighborSampleOperator(PhysicalOperator):
         self._layers = list(layers)
         self._seed_column = seed_column
         self._rng = np.random.default_rng(seed)
+        self._replace = replace
+        self._strategy = strategy
         self._batches: list[pa.RecordBatch] = []
         self._iter = iter(())
 
@@ -96,11 +105,15 @@ class NeighborSampleOperator(PhysicalOperator):
             etype_ids: list[np.ndarray] = []
             next_frontier_chunks: list[np.ndarray] = []
             for etype, csr in self._readers:
-                src_rep, dst = csr.batch_neighbors(frontier)
+                src_rep, dst = csr.batch_neighbors(
+                    frontier,
+                    fanout=fanout,
+                    replace=self._replace,
+                    seed=self._rng,
+                    strategy=self._strategy,
+                )
                 if dst.size == 0:
                     continue
-                if fanout > 0:
-                    src_rep, dst = self._reservoir(src_rep, dst, fanout)
                 srcs.append(src_rep)
                 dsts.append(dst)
                 etype_ids.append(np.full(dst.shape, self._etype_id[etype], dtype=np.uint32))
@@ -124,33 +137,6 @@ class NeighborSampleOperator(PhysicalOperator):
             )
             frontier = np.unique(np.concatenate(next_frontier_chunks))
         return out
-
-    def _reservoir(
-        self, src_rep: np.ndarray, dst: np.ndarray, fanout: int
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Per-source uniform sample without replacement."""
-        if src_rep.size == 0:
-            return src_rep, dst
-        # Sort by src so segments are contiguous.
-        order = np.argsort(src_rep, kind="stable")
-        src_sorted = src_rep[order]
-        dst_sorted = dst[order]
-        # Find segment boundaries.
-        change = np.concatenate(([True], src_sorted[1:] != src_sorted[:-1]))
-        seg_start = np.flatnonzero(change)
-        seg_end = np.concatenate((seg_start[1:], [src_sorted.size]))
-        keep_src = []
-        keep_dst = []
-        for s, e in zip(seg_start, seg_end, strict=False):
-            seg_dst = dst_sorted[s:e]
-            if seg_dst.size <= fanout:
-                keep_src.append(src_sorted[s:e])
-                keep_dst.append(seg_dst)
-            else:
-                idx = self._rng.choice(seg_dst.size, size=fanout, replace=False)
-                keep_src.append(np.full(fanout, src_sorted[s], dtype=src_sorted.dtype))
-                keep_dst.append(seg_dst[idx])
-        return np.concatenate(keep_src), np.concatenate(keep_dst)
 
 
 __all__ = ["NeighborSampleOperator"]

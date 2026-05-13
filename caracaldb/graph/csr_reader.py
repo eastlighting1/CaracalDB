@@ -65,13 +65,29 @@ class CsrReader:
         return (offs[v + 1] - offs[v]).astype(np.int64)
 
     def batch_neighbors(
-        self, vids: np.ndarray, *, return_eids: bool = False
+        self,
+        vids: np.ndarray,
+        *,
+        return_eids: bool = False,
+        fanout: int | None = None,
+        replace: bool = False,
+        seed: int | np.random.Generator | None = None,
+        strategy: str = "uniform",
     ) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Vectorised CSR fan-out.
 
         Returns ``(src_rep, dst_flat[, eid_flat])`` where ``src_rep`` repeats
-        each input vid ``deg(vid)`` times so callers can join back to seeds.
+        each input vid once per sampled neighbor so callers can join back to
+        seeds. ``strategy="uniform"`` samples per source, ``"first"`` keeps
+        the first neighbors in CSR order, and ``"all"`` ignores ``fanout``.
         """
+        if strategy not in {"uniform", "first", "all"}:
+            raise CaracalError(
+                code="CDB-7083",
+                message=f"unsupported CSR sampling strategy: {strategy!r}",
+            )
+        if fanout is not None and fanout < 0:
+            raise CaracalError(code="CDB-7083", message="fanout must be >= 0")
         if vids.size == 0:
             empty = np.empty(0, dtype=np.uint64)
             return (empty, empty) if not return_eids else (empty, empty, empty)
@@ -101,14 +117,74 @@ class CsrReader:
         idx = np.repeat(starts.astype(np.int64), lens) + (np.arange(total) - cum_minus)
         dst = np.asarray(self._file.neighbors)[idx]
         src_rep = np.repeat(vids.astype(np.uint64, copy=False), lens)
-        if not return_eids:
-            return src_rep, np.asarray(dst, dtype=np.uint64)
-        if self._file.eids is None:
-            raise CaracalError(
-                code="CDB-7083", message="this CSR was written without eids; cannot return them"
+        eid: np.ndarray | None = None
+        if return_eids:
+            if self._file.eids is None:
+                raise CaracalError(
+                    code="CDB-7083",
+                    message="this CSR was written without eids; cannot return them",
+                )
+            eid = np.asarray(self._file.eids)[idx]
+
+        effective_fanout = fanout
+        if effective_fanout == 0:
+            effective_fanout = None
+        if strategy == "all":
+            effective_fanout = None
+        if effective_fanout is not None:
+            src_rep, dst, eid = self._sample_segments(
+                src_rep,
+                np.asarray(dst, dtype=np.uint64),
+                eid,
+                effective_fanout,
+                replace=replace,
+                seed=seed,
+                strategy=strategy,
             )
-        eid = np.asarray(self._file.eids)[idx]
-        return src_rep, np.asarray(dst, dtype=np.uint64), np.asarray(eid, dtype=np.uint64)
+        else:
+            dst = np.asarray(dst, dtype=np.uint64)
+
+        if not return_eids:
+            return src_rep, dst
+        assert eid is not None
+        return src_rep, dst, np.asarray(eid, dtype=np.uint64)
+
+    @staticmethod
+    def _sample_segments(
+        src_rep: np.ndarray,
+        dst: np.ndarray,
+        eid: np.ndarray | None,
+        fanout: int,
+        *,
+        replace: bool,
+        seed: int | np.random.Generator | None,
+        strategy: str,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        if src_rep.size == 0:
+            return src_rep, dst, eid
+        rng = seed if isinstance(seed, np.random.Generator) else np.random.default_rng(seed)
+        change = np.concatenate(([True], src_rep[1:] != src_rep[:-1]))
+        seg_start = np.flatnonzero(change)
+        seg_end = np.concatenate((seg_start[1:], [src_rep.size]))
+        keep_idx: list[np.ndarray] = []
+        for start, end in zip(seg_start, seg_end, strict=True):
+            size = int(end - start)
+            if size <= fanout and not replace:
+                chosen = np.arange(start, end, dtype=np.int64)
+            elif strategy == "first":
+                if replace and size < fanout:
+                    base = np.arange(start, end, dtype=np.int64)
+                    extra = np.resize(base, fanout - size)
+                    chosen = np.concatenate((base, extra))
+                else:
+                    chosen = np.arange(start, start + fanout, dtype=np.int64)
+            else:
+                offsets = rng.choice(size, size=fanout, replace=replace)
+                chosen = start + offsets.astype(np.int64, copy=False)
+            keep_idx.append(chosen)
+        idx = np.concatenate(keep_idx) if keep_idx else np.empty(0, dtype=np.int64)
+        sampled_eid = None if eid is None else np.asarray(eid)[idx]
+        return src_rep[idx], dst[idx], sampled_eid
 
 
 __all__ = ["CsrReader"]
