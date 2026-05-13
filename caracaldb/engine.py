@@ -25,6 +25,7 @@ class EngineSelection:
         >>> selection.active
         'python'
     """
+
     requested: EngineMode
     active: RuntimeEngine
     rust_available: bool
