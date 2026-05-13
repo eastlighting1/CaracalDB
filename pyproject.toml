@@ -36,7 +36,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "dgl>=2.2.1",
+  "dgl>=2.2.1; sys_platform == 'win32'",
   "flatbuffers>=24.3",
   "flatc>=25.12.19rc0",
   "hnswlib>=0.8",
@@ -144,3 +144,9 @@ packages = ["caracaldb"]
 [[tool.mypy.overrides]]
 module = ["lark", "lark.*"]
 ignore_missing_imports = true
+
+[tool.uv]
+required-environments = [
+  "sys_platform == 'win32'",
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
