@@ -14,6 +14,7 @@ from caracaldb.api import (
     dot_product,
     l2_distance,
 )
+from caracaldb.engine import EngineSelection, resolve_engine, rust_available
 
 __all__ = [
     "Connection",
@@ -27,5 +28,8 @@ __all__ = [
     "cosine_distance",
     "cosine_similarity",
     "dot_product",
+    "EngineSelection",
     "l2_distance",
+    "resolve_engine",
+    "rust_available",
 ]

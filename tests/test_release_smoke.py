@@ -38,3 +38,10 @@ def test_release_notes_exist() -> None:
 def test_pyproject_declares_caracal_entrypoint() -> None:
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'caracal = "caracaldb.cli:main"' in text
+
+
+def test_pyproject_declares_rust_extension_build_metadata() -> None:
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "[tool.maturin]" in text
+    assert 'module-name = "caracaldb._caracaldb_rust"' in text
+    assert 'manifest-path = "crates/caracaldb-python/Cargo.toml"' in text

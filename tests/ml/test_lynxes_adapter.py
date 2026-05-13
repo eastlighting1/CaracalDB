@@ -18,4 +18,4 @@ def test_lynxes_adapter_or_skip() -> None:
     pytest.importorskip("lynxes")
     sg = Subgraph()
     gf = to_graphframe(sg)
-    assert hasattr(gf, "vertices") and hasattr(gf, "edges")
+    assert hasattr(gf, "nodes") and hasattr(gf, "edges")

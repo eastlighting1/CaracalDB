@@ -15,8 +15,37 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+import numpy as np
+import pyarrow as pa
+
 from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.ml.subgraph import Subgraph
+
+
+def _arrow_col_to_numpy(col: pa.ChunkedArray) -> np.ndarray:
+    """Convert an Arrow column to a numeric numpy array.
+
+    For scalar columns this is a simple ``to_numpy``.  For list-typed columns
+    (``list`` / ``fixed_size_list``) the flat values are extracted and reshaped
+    into a 2-D ``(num_rows, list_width)`` array so that ``torch.from_numpy``
+    receives a contiguous numeric buffer instead of an object array.
+    """
+    arr = col.combine_chunks()
+    if pa.types.is_fixed_size_list(arr.type):
+        width = arr.type.list_size
+        flat = arr.values.to_numpy(zero_copy_only=False).copy()
+        return flat.reshape(-1, width)
+    if pa.types.is_list(arr.type) or pa.types.is_large_list(arr.type):
+        flat = arr.values.to_numpy(zero_copy_only=False)
+        n = len(arr)
+        if n == 0:
+            return flat.reshape(0, 0)
+        width = len(flat) // n
+        return np.ascontiguousarray(flat.reshape(n, width))
+    result = arr.to_numpy(zero_copy_only=False)
+    if not result.flags.writeable:
+        result = result.copy()
+    return result
 
 
 def to_pyg_data(
@@ -46,7 +75,7 @@ def to_pyg_data(
         data[cls].num_nodes = tbl.num_rows
         if feature_column in tbl.column_names:
             data[cls].x = torch.from_numpy(
-                tbl.column(feature_column).combine_chunks().to_numpy(zero_copy_only=False)
+                _arrow_col_to_numpy(tbl.column(feature_column))
             )
 
     homogeneous_cls = next(iter(subgraph.nodes)) if len(subgraph.nodes) == 1 else None

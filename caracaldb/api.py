@@ -32,6 +32,7 @@ import pyarrow.compute as pc
 if TYPE_CHECKING:
     import numpy as np
 
+from caracaldb.engine import EngineSelection, resolve_engine
 from caracaldb.exec.as_of import apply_as_of, resolve_as_of
 from caracaldb.exec.expr import compile_expr
 from caracaldb.exec.operator import ExecCtx, PhysicalOperator, run_pipeline
@@ -355,6 +356,7 @@ class Database:
         self._mode = _mode
         self._closed = False
         self._csr_cache: dict[str, dict[str, CsrReader]] = {}
+        self._engine: EngineSelection = resolve_engine()
 
     @property
     def bundle(self) -> Bundle:
@@ -363,6 +365,10 @@ class Database:
     @property
     def catalog(self) -> Catalog:
         return self._catalog
+
+    @property
+    def engine(self) -> str:
+        return self._engine.active
 
     def cursor(self) -> Connection:
         return Connection(self)
@@ -5644,21 +5650,9 @@ def _compile_sql_operator(
     db: Database,
     text: str,
 ) -> tuple[Any, SnapshotId | None, int | None, str, tuple[str, ...]]:
-    program = parse_tuft(text)
-    try:
-        bind_program(program, db.catalog)
-    except CaracalError as exc:
-        if exc.code not in {"TF-3001", "TF-3004"}:
-            raise
-    if len(program.statements) != 1 or not isinstance(program.statements[0], ta.QueryStmt):
-        raise CaracalError(code="CDB-6020", message="profile/explain supports one query statement")
-    query = program.statements[0].query
-    assert query is not None
-    if _is_multi_element_pattern(query):
-        plan = _compile_pattern_query(query, db)
-        return _build_pattern_pipeline(plan, db), plan.snapshot, plan.limit, "pattern_match", ()
-    plan = _compile_query(query, db)
-    return _build_pipeline(plan, db), plan.snapshot, plan.limit, "node_match", plan.indexes_used
+    from caracaldb.query.compiler import compile_sql_operator
+
+    return compile_sql_operator(db, text)
 
 
 def _profile_query(db: Database, text: str) -> dict[str, Any]:

@@ -11,6 +11,8 @@ htmlcov/
 # Build artifacts
 build/
 dist/
+target/
+*.pdb
 *.egg-info/
 
 # Virtual environments

@@ -147,6 +147,17 @@ def unpack(
     raise typer.Exit(rc)
 
 
+@app.command()
+def migrate(
+    bundle_path: Path = typer.Argument(..., help="Path to a `.crcl` bundle"),  # noqa: B008
+    target_format: int = typer.Option(1, "--to-format", help="Target bundle format version"),  # noqa: B008
+    check: bool = typer.Option(False, "--check", help="Validate migration readiness only"),  # noqa: B008
+) -> None:
+    """Check or run an explicit bundle format migration."""
+    rc = cmd_migrate(bundle_path, target_format=target_format, check=check)
+    raise typer.Exit(rc)
+
+
 # ---------------------------------------------------------------------------
 # Programmable command surface (used by tests and CronCreate workflows).
 # ---------------------------------------------------------------------------
@@ -271,6 +282,40 @@ def cmd_unpack(file_path: Path, output: Path | None) -> int:
     return 0
 
 
+def cmd_migrate(bundle_path: Path, *, target_format: int = 1, check: bool = False) -> int:
+    try:
+        bundle = open_bundle(Path(bundle_path).with_suffix(".crcl"))
+    except CaracalError as exc:
+        typer.echo(f"caracal: {exc.code}: {exc.message}", err=True)
+        return 1
+    current = bundle.manifest.format_version
+    if target_format != current:
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "current_format": current,
+                    "target_format": target_format,
+                    "reason": "no format-changing migration is stable yet",
+                },
+                indent=2,
+            )
+        )
+        return 2
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ok" if check else "noop",
+                "current_format": current,
+                "target_format": target_format,
+                "rollback": "directory bundle is unchanged; restore from pre-migration copy if future format changes are enabled",
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Programmable entry point. ``typer`` raises ``SystemExit``; we trap it
     so ``main()`` can be tested without spawning a subprocess.
@@ -291,6 +336,7 @@ __all__ = [
     "cmd_explain",
     "cmd_import_rdf",
     "cmd_init",
+    "cmd_migrate",
     "cmd_pack",
     "cmd_run",
     "cmd_unpack",

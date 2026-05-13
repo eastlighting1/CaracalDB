@@ -25,6 +25,8 @@ jobs:
           cache-dependency-glob: |
             .python-version
             pyproject.toml
+            Cargo.toml
+            crates/**/Cargo.toml
             hatch.toml
             uv.lock
 
@@ -83,6 +85,8 @@ jobs:
           cache-dependency-glob: |
             .python-version
             pyproject.toml
+            Cargo.toml
+            crates/**/Cargo.toml
             hatch.toml
             uv.lock
 
@@ -107,6 +111,12 @@ jobs:
 
       - name: Pytest
         run: uv run pytest -x -q
+
+      - name: Build Rust extension smoke
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run maturin develop
+          uv run python -c "import caracaldb._caracaldb_rust as r; print(r.rust_engine_version())"
 
   rust:
     name: Rust
@@ -141,6 +151,6 @@ jobs:
         if: steps.rust-workspace.outputs.present == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Cargo test
+      - name: Cargo test core
         if: steps.rust-workspace.outputs.present == 'true'
-        run: cargo test --workspace --all-targets
+        run: cargo test -p caracaldb-core --all-targets

@@ -118,6 +118,8 @@ jobs:
           cache-dependency-glob: |
             .python-version
             pyproject.toml
+            Cargo.toml
+            crates/**/Cargo.toml
             hatch.toml
             uv.lock
 
@@ -157,12 +159,27 @@ jobs:
           path: bench/results/latest.json
           if-no-files-found: ignore
 
-  # -- Build pure-Python wheel and source distribution -------------------------
+  # -- Build native wheel and source distribution ------------------------------
   build-dist:
-    name: Build distributions
+    name: Build distributions / ${{ matrix.os }}
     needs: [validate-version, test, bench]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: macos-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -174,33 +191,39 @@ jobs:
           cache-dependency-glob: |
             .python-version
             pyproject.toml
+            Cargo.toml
+            crates/**/Cargo.toml
             hatch.toml
             uv.lock
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
-      - name: Build wheel and sdist
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build wheel
         shell: bash
         run: |
           rm -rf dist
-          uv run --with hatch hatch build
+          uv run --with maturin maturin build --release --out dist
 
-      - name: Verify artifact names
+      - name: Build sdist
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         shell: bash
         run: |
-          VERSION="${{ needs.validate-version.outputs.version }}"
-          BASE_VERSION="${VERSION%%-*}"
-          test -f "dist/${PACKAGE_NAME}-${BASE_VERSION}-py3-none-any.whl"
-          test -f "dist/${PACKAGE_NAME}-${BASE_VERSION}.tar.gz"
-          ls -lh dist/
+          uv run --with hatch hatch build -t sdist
+
+      - name: Verify artifacts
+        shell: bash
+        run: ls -lh dist/
 
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-dist
+          name: release-dist-${{ matrix.os }}-py${{ matrix.python-version }}
           path: dist/*
           if-no-files-found: error
 
@@ -237,7 +260,7 @@ jobs:
       - name: Download distributions
         uses: actions/download-artifact@v4
         with:
-          name: release-dist
+          name: release-dist-${{ matrix.os }}-py${{ matrix.python-version }}
           path: dist/
 
       - name: Install wheel and test
@@ -246,6 +269,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install dist/*.whl
           python -c "import caracaldb as cdb; print(cdb.__version__)"
+          python -c "import caracaldb._caracaldb_rust as r; print(r.rust_engine_version())"
           caracal --help
 
   # -- Publish to PyPI with Trusted Publishing --------------------------------
@@ -263,8 +287,9 @@ jobs:
       - name: Download distributions
         uses: actions/download-artifact@v4
         with:
-          name: release-dist
+          pattern: release-dist-*
           path: dist/
+          merge-multiple: true
 
       - name: List artifacts to be published
         run: ls -lh dist/
@@ -291,8 +316,9 @@ jobs:
       - name: Download distributions
         uses: actions/download-artifact@v4
         with:
-          name: release-dist
+          pattern: release-dist-*
           path: dist/
+          merge-multiple: true
 
       - name: Prepare release notes
         id: release-notes

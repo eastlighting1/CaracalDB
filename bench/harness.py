@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import random
 import tempfile
@@ -265,12 +266,190 @@ def bench_graph_ecosystem(
     }
 
 
+def _rust() -> Any:
+    from caracaldb import _caracaldb_rust
+
+    return _caracaldb_rust
+
+
+def _ipc_stream(table: pa.Table) -> bytes:
+    sink = io.BytesIO()
+    with pa.ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue()
+
+
+def _read_ipc_streams(streams: Iterable[bytes]) -> pa.Table:
+    tables = [pa.ipc.open_stream(io.BytesIO(stream)).read_all() for stream in streams]
+    if not tables:
+        return pa.table({})
+    return pa.concat_tables(tables, promote_options="default")
+
+
+def _rust_bundle() -> tuple[Any, Path, str]:
+    rust = _rust()
+    tmp = tempfile.TemporaryDirectory()
+    path = Path(tmp.name) / "bench.crcl"
+    rust.create_bundle(str(path), False)
+    return rust, path, tmp
+
+
+def _rust_node_table(n: int = 4096) -> pa.Table:
+    return pa.table(
+        {
+            "symbol": pa.array([f"n{i}" for i in range(n)]),
+            "score": pa.array(np.arange(n, dtype=np.uint64)),
+        }
+    )
+
+
+def _rust_edge_table(n: int = 4096, vertices: int = 1024) -> pa.Table:
+    src = np.arange(n, dtype=np.uint64) % vertices
+    dst = (src + 1) % vertices
+    return pa.table({"src": pa.array(src), "dst": pa.array(dst)})
+
+
+def _rust_storage_scenario(name: str, kind: str, scan: bool = False) -> BenchResult:
+    rust, path, tmp = _rust_bundle()
+    with tmp:
+        if kind == "node":
+            table = _rust_node_table()
+            rust.open_node_store(str(path), "http://example.org/Gene", "Gene", True)
+
+            def run() -> int:
+                rust.append_node_batch(
+                    str(path),
+                    "http://example.org/Gene",
+                    "Gene",
+                    _ipc_stream(table),
+                    1,
+                )
+                if scan:
+                    return _read_ipc_streams(
+                        rust.scan_node_store(str(path), "http://example.org/Gene", "Gene", None)
+                    ).num_rows
+                return table.num_rows
+
+        else:
+            table = _rust_edge_table()
+            rust.open_edge_store(str(path), "http://example.org/REL", "REL", True)
+
+            def run() -> int:
+                rust.append_edge_batch(
+                    str(path),
+                    "http://example.org/REL",
+                    "REL",
+                    _ipc_stream(table),
+                    1,
+                )
+                if scan:
+                    return _read_ipc_streams(
+                        rust.scan_edge_store(str(path), "http://example.org/REL", "REL", None)
+                    ).num_rows
+                return table.num_rows
+
+        return {
+            "scenario": name,
+            "metric": "ms",
+            "value": _elapsed_ms(run),
+            "engine": "rust",
+            "rows": table.num_rows,
+        }
+
+
+def _rust_csr_scenario(name: str, mode: str) -> BenchResult:
+    rust = _rust()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "graph.csr"
+        n = 4096
+        src = (np.arange(n * 4, dtype=np.uint64) % n).tolist()
+        dst = ((np.arange(n * 4, dtype=np.uint64) + 1) % n).tolist()
+        seeds = [0, 17, 1024, 2048]
+
+        if mode == "build":
+
+            def run() -> int:
+                meta = rust.build_csr(str(path), n, src, dst)
+                return int(meta["num_edges"])
+
+        elif mode == "neighbors":
+            rust.build_csr(str(path), n, src, dst)
+
+            def run() -> int:
+                rows = rust.csr_neighbor_sample_rows(str(path), seeds, 8, False)
+                return len(rows)
+
+        elif mode == "pattern":
+            rust.build_csr(str(path), n, src, dst)
+
+            def run() -> int:
+                total = 0
+                for seed in seeds:
+                    total += len(rust.csr_neighbors(str(path), seed)["neighbors"])
+                return total
+
+        else:
+            rust.build_csr(str(path), n, src, dst)
+
+            def run() -> int:
+                return len(rust.csr_k_hop_rows(str(path), seeds, 1, 3))
+
+        return {
+            "scenario": name,
+            "metric": "ms",
+            "value": _elapsed_ms(run),
+            "engine": "rust",
+            "vertices": n,
+            "edges": len(src),
+        }
+
+
+def bench_rust_node_append() -> BenchResult:
+    return _rust_storage_scenario("rust_node_append", "node", scan=False)
+
+
+def bench_rust_edge_append() -> BenchResult:
+    return _rust_storage_scenario("rust_edge_append", "edge", scan=False)
+
+
+def bench_rust_node_scan() -> BenchResult:
+    return _rust_storage_scenario("rust_node_scan", "node", scan=True)
+
+
+def bench_rust_edge_scan() -> BenchResult:
+    return _rust_storage_scenario("rust_edge_scan", "edge", scan=True)
+
+
+def bench_rust_csr_build() -> BenchResult:
+    return _rust_csr_scenario("rust_csr_build", "build")
+
+
+def bench_rust_neighbor_traversal() -> BenchResult:
+    return _rust_csr_scenario("rust_neighbor_traversal", "neighbors")
+
+
+def bench_rust_pattern_query() -> BenchResult:
+    return _rust_csr_scenario("rust_pattern_query", "pattern")
+
+
+def bench_rust_var_path_query() -> BenchResult:
+    return _rust_csr_scenario("rust_var_path_query", "var_path")
+
+
 RUNNERS: dict[str, BenchRunner] = {
     "1hop": bench_1hop,
     "2hop": bench_2hop,
     "knn": bench_knn,
     "neighbor_sample": bench_neighbor_sample,
     "graph_ecosystem": bench_graph_ecosystem,
+    "rust_node_append": bench_rust_node_append,
+    "rust_edge_append": bench_rust_edge_append,
+    "rust_node_scan": bench_rust_node_scan,
+    "rust_edge_scan": bench_rust_edge_scan,
+    "rust_csr_build": bench_rust_csr_build,
+    "rust_neighbor_traversal": bench_rust_neighbor_traversal,
+    "rust_pattern_query": bench_rust_pattern_query,
+    "rust_var_path_query": bench_rust_var_path_query,
 }
 
 

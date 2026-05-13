@@ -10,13 +10,29 @@ from bench.harness import (  # noqa: E402  (path bootstrap above)
     RUNNERS,
     bench_graph_ecosystem,
     bench_knn,
+    bench_rust_csr_build,
+    bench_rust_node_append,
     compare_against_baseline,
     write_results,
 )
 
 
 def test_runners_registry_is_complete() -> None:
-    assert {"1hop", "2hop", "knn", "neighbor_sample", "graph_ecosystem"} <= set(RUNNERS)
+    assert {
+        "1hop",
+        "2hop",
+        "knn",
+        "neighbor_sample",
+        "graph_ecosystem",
+        "rust_node_append",
+        "rust_edge_append",
+        "rust_node_scan",
+        "rust_edge_scan",
+        "rust_csr_build",
+        "rust_neighbor_traversal",
+        "rust_pattern_query",
+        "rust_var_path_query",
+    } <= set(RUNNERS)
 
 
 def test_bench_knn_returns_well_formed_result() -> None:
@@ -24,6 +40,17 @@ def test_bench_knn_returns_well_formed_result() -> None:
     assert result["scenario"] == "knn"
     assert result["metric"] == "ms"
     assert isinstance(result["value"], float) and result["value"] >= 0.0
+
+
+def test_rust_benches_call_real_engine_paths() -> None:
+    node = bench_rust_node_append()
+    csr = bench_rust_csr_build()
+    assert node["scenario"] == "rust_node_append"
+    assert node["engine"] == "rust"
+    assert node["rows"] > 0
+    assert csr["scenario"] == "rust_csr_build"
+    assert csr["engine"] == "rust"
+    assert csr["edges"] > 0
 
 
 def test_graph_ecosystem_bench_reports_native_modes() -> None:

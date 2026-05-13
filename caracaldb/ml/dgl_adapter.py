@@ -23,7 +23,7 @@ def to_dgl_block(
     try:
         import dgl
         import torch
-    except ImportError as exc:  # pragma: no cover
+    except (ImportError, OSError) as exc:  # pragma: no cover
         raise CaracalError(
             code="CDB-6111",
             message="dgl / torch not installed; DGL adapter unavailable",

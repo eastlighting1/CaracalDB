@@ -48,8 +48,11 @@ def test_pyg_adapter_or_skip() -> None:
 
 
 def test_dgl_adapter_or_skip() -> None:
-    pytest.importorskip("dgl")
-    pytest.importorskip("torch")
+    try:
+        import dgl  # noqa: F401
+        import torch  # noqa: F401
+    except (ImportError, OSError):
+        pytest.skip("dgl/torch not usable")
     g = to_dgl_block(_toy_subgraph())
     assert g.num_edges() == 2
 
@@ -72,7 +75,7 @@ def test_pyg_adapter_raises_actionable_error_when_missing() -> None:
 def test_dgl_adapter_raises_actionable_error_when_missing() -> None:
     try:
         import dgl  # noqa: F401
-    except ImportError:
+    except (ImportError, OSError):
         with pytest.raises(CaracalError) as exc:
             to_dgl_block(_toy_subgraph())
         assert exc.value.code == "CDB-6111"
