@@ -18,6 +18,13 @@ _ENGINE_ENV = "CARACALDB_ENGINE"
 
 @dataclass(frozen=True, slots=True)
 class EngineSelection:
+    """Engine selection configuration.
+
+    Examples:
+        >>> selection = EngineSelection(requested="python", active="python", rust_available=False)
+        >>> selection.active
+        'python'
+    """
     requested: EngineMode
     active: RuntimeEngine
     rust_available: bool
@@ -32,10 +39,22 @@ def rust_module() -> ModuleType | None:
 
 
 def rust_available() -> bool:
+    """Check if the rust core module is available.
+
+    Examples:
+        >>> available = rust_available()
+    """
     return rust_module() is not None
 
 
 def resolve_engine() -> EngineSelection:
+    """Resolve the active execution engine.
+
+    Examples:
+        >>> selection = resolve_engine()
+        >>> selection.active in ("python", "rust")
+        True
+    """
     raw = os.environ.get(_ENGINE_ENV, "python").strip().lower()
     if raw not in {"python", "rust", "auto"}:
         raise CaracalError(

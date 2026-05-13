@@ -150,8 +150,12 @@ def unpack(
 @app.command()
 def migrate(
     bundle_path: Path = typer.Argument(..., help="Path to a `.crcl` bundle"),  # noqa: B008
-    target_format: int = typer.Option(1, "--to-format", help="Target bundle format version"),  # noqa: B008
-    check: bool = typer.Option(False, "--check", help="Validate migration readiness only"),  # noqa: B008
+    target_format: int = typer.Option(
+        1, "--to-format", help="Target bundle format version"
+    ),  # noqa: B008
+    check: bool = typer.Option(
+        False, "--check", help="Validate migration readiness only"
+    ),  # noqa: B008
 ) -> None:
     """Check or run an explicit bundle format migration."""
     rc = cmd_migrate(bundle_path, target_format=target_format, check=check)

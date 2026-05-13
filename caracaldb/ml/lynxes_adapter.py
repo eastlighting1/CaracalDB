@@ -67,9 +67,7 @@ def from_graphframe(
             for lbl in label_col[i].as_py():
                 seen_labels.add(lbl)
         for cls in sorted(seen_labels):
-            mask = pa.array(
-                [cls in row.as_py() for row in label_col], type=pa.bool_()
-            )
+            mask = pa.array([cls in row.as_py() for row in label_col], type=pa.bool_())
             sub = vertices.filter(mask)
             drop = [c for c in ("_id", "_label") if c in sub.column_names]
             if drop:
@@ -80,11 +78,7 @@ def from_graphframe(
         for prop in sorted({*edges.column("_type").to_pylist()}):
             mask = pa.compute.equal(edges.column("_type"), prop)
             sub = edges.filter(mask)
-            drop = [
-                c
-                for c in ("_src", "_dst", "_type", "_direction")
-                if c in sub.column_names
-            ]
+            drop = [c for c in ("_src", "_dst", "_type", "_direction") if c in sub.column_names]
             if drop:
                 sub = sub.drop_columns(drop)
             sg.add_edges(_resolve(prop_map, prop), sub)
@@ -103,9 +97,7 @@ def _build_node_frame(lynxes, nodes: dict[str, pa.Table]):
             counter += 1
         for col_name in tbl.column_names:
             if col_name not in ("_id", "_label"):
-                extra_cols.setdefault(col_name, []).extend(
-                    tbl.column(col_name).to_pylist()
-                )
+                extra_cols.setdefault(col_name, []).extend(tbl.column(col_name).to_pylist())
     data = {**rows, **extra_cols}
     return lynxes.NodeFrame.from_dict(data)
 
@@ -124,9 +116,7 @@ def _build_edge_frame(lynxes, edges: dict[str, pa.Table]):
         rows["_direction"].extend([0] * n)
         for col_name in tbl.column_names:
             if col_name not in (src_col, dst_col, "_type", "_direction"):
-                extra_cols.setdefault(col_name, []).extend(
-                    tbl.column(col_name).to_pylist()
-                )
+                extra_cols.setdefault(col_name, []).extend(tbl.column(col_name).to_pylist())
     data = {**rows, **extra_cols}
     return lynxes.EdgeFrame.from_dict(data)
 

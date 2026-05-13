@@ -74,9 +74,7 @@ def to_pyg_data(
     for cls, tbl in subgraph.nodes.items():
         data[cls].num_nodes = tbl.num_rows
         if feature_column in tbl.column_names:
-            data[cls].x = torch.from_numpy(
-                _arrow_col_to_numpy(tbl.column(feature_column))
-            )
+            data[cls].x = torch.from_numpy(_arrow_col_to_numpy(tbl.column(feature_column)))
 
     homogeneous_cls = next(iter(subgraph.nodes)) if len(subgraph.nodes) == 1 else None
     for prop, tbl in subgraph.edges.items():
