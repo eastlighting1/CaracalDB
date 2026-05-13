@@ -19,10 +19,12 @@ def render_symbols() -> str:
             summary = "Package version."
         elif inspect.isclass(obj):
             kind = "class"
-            summary = (inspect.getdoc(obj) or "").splitlines()[0]
+            lines = (inspect.getdoc(obj) or "").splitlines()
+            summary = lines[0] if lines else ""
         elif callable(obj):
             kind = "function"
-            summary = (inspect.getdoc(obj) or "").splitlines()[0]
+            lines = (inspect.getdoc(obj) or "").splitlines()
+            summary = lines[0] if lines else ""
         else:
             kind = "object"
             summary = ""

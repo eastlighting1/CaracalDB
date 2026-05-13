@@ -13,6 +13,12 @@
   },
   {
     "kind": "class",
+    "name": "caracaldb.EngineSelection",
+    "summary": "EngineSelection(requested: 'EngineMode', active: 'RuntimeEngine', rust_available: 'bool', rust_error: 'str | None' = None)",
+    "url": "api/caracaldb/#engineselection"
+  },
+  {
+    "kind": "class",
     "name": "caracaldb.GraphRAGResult",
     "summary": "Materialized graph-native evidence retrieval result.",
     "url": "api/caracaldb/#graphragresult"
@@ -70,5 +76,17 @@
     "name": "caracaldb.l2_distance",
     "summary": "Return Euclidean distance for equal-dimension vectors.",
     "url": "api/caracaldb/#l2_distance"
+  },
+  {
+    "kind": "function",
+    "name": "caracaldb.resolve_engine",
+    "summary": "",
+    "url": "api/caracaldb/#resolve_engine"
+  },
+  {
+    "kind": "function",
+    "name": "caracaldb.rust_available",
+    "summary": "",
+    "url": "api/caracaldb/#rust_available"
   }
 ]

@@ -308,7 +308,10 @@ def cmd_migrate(bundle_path: Path, *, target_format: int = 1, check: bool = Fals
                 "status": "ok" if check else "noop",
                 "current_format": current,
                 "target_format": target_format,
-                "rollback": "directory bundle is unchanged; restore from pre-migration copy if future format changes are enabled",
+                "rollback": (
+                    "directory bundle is unchanged; restore from pre-migration "
+                    "copy if future format changes are enabled"
+                ),
             },
             indent=2,
         )
