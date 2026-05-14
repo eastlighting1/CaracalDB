@@ -63,7 +63,7 @@ with cdb.connect("citation") as db:
 
 ### Subgraph adapters
 
-The lower-level `caracaldb.ml.Subgraph` container and PyG/DGL/jraph adapters
+The lower-level `caracaldb.ml.Subgraph` container and Lynxes/PyG/jraph adapters
 remain available for workloads that already assemble Arrow-backed node and
 edge tables manually.
 
@@ -131,6 +131,6 @@ with cdb.connect("citation") as db:
 
 - [ML Integration Concept](../concepts/ml-integration.md) — Arrow-native design philosophy
 - [Neighbor Loader PyG Guide](../guides/neighbor-loader-pyg.md) — full PyG training loop
-- [PyG and DGL Interop](../interop/pyg-and-dgl.md) — framework-specific conversion notes
+- [PyG Interop](../interop/pyg.md) — framework-specific conversion notes
 - [Feature Store Guide](../guides/feature-store.md) — cache configuration and invalidation
 - [Graph](graph.md) — CSR indexes that back neighbor sampling

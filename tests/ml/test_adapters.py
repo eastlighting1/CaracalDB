@@ -4,7 +4,8 @@ import pytest
 
 from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.ml import Subgraph
-from caracaldb.ml.dgl_adapter import to_dgl_block
+from caracaldb.ml import to_graphs_tuple as public_to_graphs_tuple
+from caracaldb.ml import to_pyg_data as public_to_pyg_data
 from caracaldb.ml.jraph_adapter import to_graphs_tuple
 from caracaldb.ml.pyg_adapter import to_pyg_data
 
@@ -40,21 +41,16 @@ def test_subgraph_basic_counts() -> None:
     assert sg.num_nodes() == 3 and sg.num_edges() == 2
 
 
+def test_framework_adapters_are_exported_from_ml_package() -> None:
+    assert public_to_pyg_data is to_pyg_data
+    assert public_to_graphs_tuple is to_graphs_tuple
+
+
 def test_pyg_adapter_or_skip() -> None:
     pytest.importorskip("torch")
     pytest.importorskip("torch_geometric")
     data = to_pyg_data(_toy_subgraph())
     assert data["Account"].num_nodes == 3
-
-
-def test_dgl_adapter_or_skip() -> None:
-    try:
-        import dgl  # noqa: F401
-        import torch  # noqa: F401
-    except (ImportError, OSError):
-        pytest.skip("dgl/torch not usable")
-    g = to_dgl_block(_toy_subgraph())
-    assert g.num_edges() == 2
 
 
 def test_jraph_adapter_or_skip() -> None:
@@ -70,15 +66,6 @@ def test_pyg_adapter_raises_actionable_error_when_missing() -> None:
         with pytest.raises(CaracalError) as exc:
             to_pyg_data(_toy_subgraph())
         assert exc.value.code == "CDB-6110"
-
-
-def test_dgl_adapter_raises_actionable_error_when_missing() -> None:
-    try:
-        import dgl  # noqa: F401
-    except (ImportError, OSError):
-        with pytest.raises(CaracalError) as exc:
-            to_dgl_block(_toy_subgraph())
-        assert exc.value.code == "CDB-6111"
 
 
 def test_jraph_adapter_raises_actionable_error_when_missing() -> None:

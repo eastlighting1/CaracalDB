@@ -31,14 +31,14 @@ Current v0.1.x behavior is backed by the Python reference engine. A Rust core is
 | Tuft | Language reference and specification. |
 | API | Python API reference and module entry points. |
 | Errors | Error code index and recovery guidance. |
-| Interop | Lynxes, Neo4j, PyG, DGL, jraph, and related integration paths. |
+| Interop | Lynxes, Neo4j, PyG, jraph, and related integration paths. |
 | Developers | Contribution, testing, benchmark, and engine-extension guidance. |
 
 ## Audience Paths
 
 | Audience | Start with | Then read |
 |---|---|---|
-| Data and ML engineers | [Quickstart](start/quickstart.md) | [Ingest Parquet](guides/ingest-parquet.md), [Neighbor Loader PyG](guides/neighbor-loader-pyg.md), [Export Subgraph](guides/export-subgraph.md), [PyG and DGL](interop/pyg-and-dgl.md) |
+| Data and ML engineers | [Quickstart](start/quickstart.md) | [Ingest Parquet](guides/ingest-parquet.md), [Neighbor Loader PyG](guides/neighbor-loader-pyg.md), [Export Subgraph](guides/export-subgraph.md), [PyG Interop](interop/pyg.md) |
 | Graph engineers | [Data Model](concepts/data-model.md) | [Tuft](tuft/README.md), [Pattern Queries](guides/pattern-queries.md), [Neo4j Migration](interop/neo4j-migration.md) |
 | Contributors | [Developers](developers/README.md) | [Contributing](developers/contributing.md), [Testing Strategy](developers/testing-strategy.md), [Error Policy](developers/error-policy.md) |
 

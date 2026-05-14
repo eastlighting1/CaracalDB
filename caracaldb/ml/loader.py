@@ -3,7 +3,7 @@
 The loader runs the user-supplied seed pipeline once, splits the result into
 ``batch_size`` chunks, and for each chunk runs ``NeighborSampleOperator`` to
 produce a ``Subgraph``. Adapter functions are pluggable so the same loader
-can yield PyG / DGL / jraph / Arrow batches without re-running the sampler.
+can yield Arrow, Lynxes, PyG, or jraph batches without re-running the sampler.
 
 Worker-process safety is enforced through a guard: the loader refuses to be
 pickled into a child process while a CSR mmap is still open in the parent.
@@ -27,7 +27,7 @@ from caracaldb.ml.subgraph import Subgraph
 from caracaldb.storage.bundle import Bundle
 from caracaldb.storage.node_store import open_node_store
 
-Backend = str  # "pyg" | "dgl" | "jraph" | "arrow"
+Backend = str  # "arrow" | "lynxes" | "pyg" | "jraph"
 
 
 @dataclass(slots=True)
@@ -118,10 +118,16 @@ def _resolve_adapter(backend: Backend) -> Callable[[Subgraph], object]:
         from caracaldb.ml.pyg_adapter import to_pyg_data
 
         return to_pyg_data  # type: ignore[return-value]
-    if backend == "dgl":
-        from caracaldb.ml.dgl_adapter import to_dgl_block
+    if backend == "lynxes":
+        from caracaldb.ml.lynxes_adapter import to_graphframe
 
-        return to_dgl_block  # type: ignore[return-value]
+        return to_graphframe  # type: ignore[return-value]
+    if backend == "dgl":
+        raise CaracalError(
+            code="CDB-6120",
+            message="DGL backend is not supported by CaracalDB",
+            hint="use backend='arrow', backend='lynxes', backend='pyg', or backend='jraph'",
+        )
     if backend == "jraph":
         from caracaldb.ml.jraph_adapter import to_graphs_tuple
 

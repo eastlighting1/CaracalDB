@@ -1,6 +1,7 @@
 [package]
 name = "caracaldb-core"
-version = "1.0.0"
+version = "1.0.1"
+description = "Rust core engine components for CaracalDB."
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

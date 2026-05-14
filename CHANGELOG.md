@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-05-14
+
+### Fixed
+
+- Removed DGL from CaracalDB dependencies and supported backend paths.
+- Moved GNN framework integrations behind optional extras so core installs do
+  not require PyTorch, JAX, or DGL resolver support.
+- Constrained supported Python metadata to `>=3.11,<3.14` for the current
+  release line.
+- Fixed native release packaging checks for Rust extension wheels, source
+  distributions, and duplicate `abi3` artifact names.
+- Exposed Lynxes/PyG/jraph adapter functions through `caracaldb.ml`.
+
 ## [1.0.0] - 2026-05-14
 
 ### Changed

@@ -17,8 +17,8 @@ flowchart LR
     A --> C["Arrow edge table"]
     B --> D["Subgraph"]
     C --> D
-    D --> E["PyG / DGL / jraph"]
-    D --> F["Lynxes GraphFrame"]
+    D --> E["Lynxes GraphFrame"]
+    D --> F["PyG / jraph"]
 ```
 ## Subgraph Contract
 

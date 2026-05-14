@@ -37,4 +37,4 @@ The public quickstart code fence is executed by `tools/check_quickstart_code.py`
 
 ## Common Pitfall
 
-Do not hide missing optional dependencies by weakening tests. If a feature needs `torch`, `dgl`, `jraph`, or `flatc`, the skip should explain the missing dependency and leave the core suite meaningful without it.
+Do not hide missing optional dependencies by weakening tests. If a feature needs `torch`, `jraph`, or `flatc`, the skip should explain the missing dependency and leave the core suite meaningful without it.

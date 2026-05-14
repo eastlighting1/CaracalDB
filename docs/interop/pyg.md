@@ -5,9 +5,9 @@ last_updated: 2026-04-30
 engine_status: python-reference; rust-engine-planned
 ---
 
-# PyG And DGL
+# PyG Interop
 
-PyG and DGL integration turns a CaracalDB subgraph into tensors while keeping CaracalDB responsible for storage, query, reasoning, and repeatable snapshot selection.
+PyG integration turns a CaracalDB subgraph into tensors while keeping CaracalDB responsible for storage, query, reasoning, and repeatable snapshot selection.
 
 ## Problem
 
@@ -22,7 +22,6 @@ The planned adapter surface centers on `Subgraph` exports:
 | Target | Expected payload |
 |---|---|
 | PyG | `Data` or `HeteroData` with `edge_index`, `x`, labels, and masks |
-| DGL | `DGLGraph` or blocks with node and edge feature tensors |
 | CaracalDB | Snapshot-bound Arrow tables and graph identity columns |
 
 ## Workflow

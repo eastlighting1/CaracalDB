@@ -2,8 +2,8 @@
 
 Adapters consume ``Subgraph`` and return framework-native graphs. Keeping the
 representation Arrow-first means the adapters do at most one zero-copy bridge
-each (``torch.from_numpy`` / ``dgl.graph(...)`` / ``jraph.GraphsTuple``), and
-the heavy work (sampling, feature gather) is shared.
+each (``torch.from_numpy`` / ``jraph.GraphsTuple``), and the heavy work
+(sampling, feature gather) is shared.
 
 Layout:
 * ``nodes[class_iri] -> pa.Table`` with at least ``nid: UInt64`` plus

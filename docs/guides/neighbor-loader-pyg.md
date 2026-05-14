@@ -92,4 +92,4 @@ Run a tiny deterministic sample before training: use one seed node, a fixed fan-
 
 ## Related ADR
 
-Framework adapter stability should be documented once the PyG, DGL, and jraph APIs are promoted.
+Framework adapter stability should be documented once the PyG and jraph APIs are promoted.

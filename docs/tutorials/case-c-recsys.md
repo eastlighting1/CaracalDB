@@ -39,7 +39,7 @@ Build a small recommendation workflow:
 5. Emit Arrow-backed `Subgraph` batches for ML adapters.
 
 ```text
-User seeds -> viewed CSR -> NeighborLoader -> Subgraph -> PyG / DGL / jraph
+User seeds -> viewed CSR -> NeighborLoader -> Subgraph -> Lynxes / PyG / jraph
 ```
 For the executable end-to-end flow, run `examples/recsys.ipynb` or the tests under `tests/golden/case_c`.
 

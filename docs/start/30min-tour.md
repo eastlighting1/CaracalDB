@@ -218,7 +218,7 @@ CaracalDB can return Arrow tables when you need columnar interop, while higher-l
 
 ```text
 Tuft query -> rows for app code
-Tuft query -> Arrow table -> Subgraph -> Lynxes / PyG / DGL / jraph
+Tuft query -> Arrow table -> Subgraph -> Lynxes / PyG / jraph
 ```
 
 ## Next Steps

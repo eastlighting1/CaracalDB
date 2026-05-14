@@ -1,8 +1,18 @@
 import pytest
 
 from caracaldb.lang.diagnostics import CaracalError
-from caracaldb.ml import Subgraph
-from caracaldb.ml.lynxes_adapter import to_graphframe
+from caracaldb.ml import (
+    Subgraph,
+    from_graphframe,
+    to_graphframe,
+)
+from caracaldb.ml.lynxes_adapter import from_graphframe as adapter_from_graphframe
+from caracaldb.ml.lynxes_adapter import to_graphframe as adapter_to_graphframe
+
+
+def test_lynxes_adapters_are_exported_from_ml_package() -> None:
+    assert to_graphframe is adapter_to_graphframe
+    assert from_graphframe is adapter_from_graphframe
 
 
 def test_lynxes_adapter_raises_when_missing() -> None:

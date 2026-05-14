@@ -170,11 +170,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            python-version: "3.11"
-          - os: ubuntu-latest
             python-version: "3.12"
-          - os: ubuntu-latest
-            python-version: "3.13"
           - os: macos-latest
             python-version: "3.12"
           - os: windows-latest
@@ -214,7 +210,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         shell: bash
         run: |
-          uv run --with hatch hatch build -t sdist
+          uv run --with maturin maturin sdist --out dist
 
       - name: Verify artifacts
         shell: bash
@@ -225,7 +221,7 @@ jobs:
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-dist-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: release-dist-${{ matrix.os }}
           path: dist/*
           if-no-files-found: error
 
@@ -262,7 +258,7 @@ jobs:
       - name: Download distributions
         uses: actions/download-artifact@v4
         with:
-          name: release-dist-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: release-dist-${{ matrix.os }}
           path: dist/
 
       - name: Install wheel and test

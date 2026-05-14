@@ -1,9 +1,11 @@
 from pathlib import Path
 
 import pyarrow as pa
+import pytest
 
 from caracaldb.graph import build_csr
 from caracaldb.graph.csr_reader import CsrReader
+from caracaldb.lang.diagnostics import CaracalError
 from caracaldb.ml import NeighborLoader, NeighborLoaderConfig, Subgraph
 from caracaldb.storage import create_bundle
 from caracaldb.storage.edge_store import open_edge_store
@@ -62,3 +64,51 @@ def test_neighbor_loader_node_features_attaches_columns(tmp_path: Path) -> None:
     sg = next(iter(loader))
     assert "http://x/V" in sg.nodes
     assert "label" in sg.nodes["http://x/V"].column_names
+
+
+def test_neighbor_loader_accepts_lynxes_backend_when_installed(tmp_path: Path) -> None:
+    pytest.importorskip("lynxes")
+    bundle, csr = _seed(tmp_path)
+    cfg = NeighborLoaderConfig(
+        layers=[1],
+        edge_readers={"http://x/p": csr},
+        seed_class_iri="http://x/V",
+        seed_local_name="V",
+        batch_size=10,
+        backend="lynxes",
+    )
+    first = next(iter(NeighborLoader(bundle, cfg)))
+    assert hasattr(first, "nodes") and hasattr(first, "edges")
+
+
+def test_neighbor_loader_rejects_dgl_backend(tmp_path: Path) -> None:
+    bundle, csr = _seed(tmp_path)
+    cfg = NeighborLoaderConfig(
+        layers=[1],
+        edge_readers={"http://x/p": csr},
+        seed_class_iri="http://x/V",
+        seed_local_name="V",
+        backend="dgl",
+    )
+    with pytest.raises(CaracalError) as exc:
+        NeighborLoader(bundle, cfg)
+    assert exc.value.code == "CDB-6120"
+    assert "DGL backend is not supported" in exc.value.message
+
+
+def test_neighbor_loader_rejects_lynxes_backend_when_missing(tmp_path: Path) -> None:
+    try:
+        import lynxes  # noqa: F401
+    except ImportError:
+        bundle, csr = _seed(tmp_path)
+        cfg = NeighborLoaderConfig(
+            layers=[1],
+            edge_readers={"http://x/p": csr},
+            seed_class_iri="http://x/V",
+            seed_local_name="V",
+            batch_size=10,
+            backend="lynxes",
+        )
+        with pytest.raises(CaracalError) as exc:
+            next(iter(NeighborLoader(bundle, cfg)))
+        assert exc.value.code == "CDB-6113"

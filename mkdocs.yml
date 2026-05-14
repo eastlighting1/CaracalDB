@@ -115,9 +115,13 @@ nav:
       - Grammar: tuft/grammar.lark
   - API Reference:
       - Overview: api/README.md
+      - Input / Output: api/io.md
+      - Ontology & Metadata: api/onto.md
       - Storage & Transactions: api/storage.md
       - Graph: api/graph.md
       - Machine Learning: api/ml.md
+      - Query Engine: api/query-engine.md
+      - Extensions: api/extensions.md
   - Errors:
       - Index: errors/index.md
       - Tuft:
@@ -147,7 +151,7 @@ nav:
       - Lynxes GraphFrame: interop/lynxes-graphframe.md
       - Neo4j Migration: interop/neo4j-migration.md
       - Neo4j Bolt Bridge: interop/neo4j-bolt-bridge.md
-      - PyG And DGL: interop/pyg-and-dgl.md
+      - PyG: interop/pyg.md
       - jraph And JAX: interop/jraph-and-jax.md
   - Format:
       - Overview: format/README.md

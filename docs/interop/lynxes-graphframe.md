@@ -34,7 +34,7 @@ Lynxes result -> Arrow table -> CaracalDB feature or node property
 ```
 ## Adapter Shape
 
-The public adapter names are reserved as `to_graphframe` and `from_graphframe`. Until those functions are promoted into the stable API, document examples should describe the interchange contract rather than promising an import path.
+The public adapter functions are `caracaldb.ml.to_graphframe` and `caracaldb.ml.from_graphframe`. Both operate on the same Arrow-backed `Subgraph` contract used by the PyG and jraph adapters.
 
 The contract is simple:
 
