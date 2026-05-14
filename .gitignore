@@ -3,17 +3,27 @@ __pycache__/
 *.py[cod]
 *.pyo
 .pytest_cache/
+.hypothesis/
+.benchmarks/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
 # Build artifacts
 build/
 dist/
+dist_*/
 target/
 *.pdb
+*.pyd
+*.so
+*.dylib
+*.dll
 *.egg-info/
+pip-wheel-metadata/
 
 # Virtual environments
 .venv/
