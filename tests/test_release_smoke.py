@@ -8,9 +8,13 @@ declarative state that Hatch reads.
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
+import pytest
+
 import caracaldb
+from tools.check_dist_archives import check_wheel
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RELEASE_VERSION = caracaldb.__version__
@@ -51,4 +55,25 @@ def test_release_workflow_smokes_wheel_outside_checkout() -> None:
     text = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     assert 'SMOKE_DIR="$(mktemp -d)"' in text
     assert 'cd "$SMOKE_DIR"' in text
+    assert "python tools/check_dist_archives.py dist" in text
+    assert "skip-existing: true" in text
+    assert "print-hash: true" in text
+
+
+def test_dist_archive_checker_rejects_trailing_wheel_data() -> None:
+    text = (REPO_ROOT / "tools" / "check_dist_archives.py").read_text(encoding="utf-8")
+    assert "ZIP archive has {trailing} trailing byte(s)" in text
+    assert "expected_end != len(data)" in text
     assert "Rust extension missing from wheel" in text
+
+
+def test_dist_archive_checker_detects_actual_trailing_bytes(tmp_path: Path) -> None:
+    wheel = tmp_path / "caracaldb-1.0.0-cp311-abi3-test.whl"
+    with zipfile.ZipFile(wheel, "w") as zf:
+        zf.writestr("caracaldb/__init__.py", "")
+        zf.writestr("caracaldb/_caracaldb_rust.so", b"native")
+    with wheel.open("ab") as fh:
+        fh.write(b"trailing")
+
+    with pytest.raises(SystemExit, match="trailing byte"):
+        check_wheel(wheel)
