@@ -55,7 +55,7 @@ def test_release_workflow_smokes_wheel_outside_checkout() -> None:
     text = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     assert 'SMOKE_DIR="$(mktemp -d)"' in text
     assert 'cd "$SMOKE_DIR"' in text
-    assert "python tools/check_dist_archives.py dist" in text
+    assert "python tools/check_dist_archives.py --repair dist" in text
     assert "skip-existing: true" in text
     assert "print-hash: true" in text
 
@@ -77,3 +77,18 @@ def test_dist_archive_checker_detects_actual_trailing_bytes(tmp_path: Path) -> N
 
     with pytest.raises(SystemExit, match="trailing byte"):
         check_wheel(wheel)
+
+
+def test_dist_archive_checker_can_repair_trailing_bytes(tmp_path: Path) -> None:
+    wheel = tmp_path / "caracaldb-1.0.0-cp311-abi3-test.whl"
+    with zipfile.ZipFile(wheel, "w") as zf:
+        zf.writestr("caracaldb/__init__.py", "")
+        zf.writestr("caracaldb/_caracaldb_rust.so", b"native")
+    clean_size = wheel.stat().st_size
+    with wheel.open("ab") as fh:
+        fh.write(b"bad")
+
+    check_wheel(wheel, repair=True)
+
+    assert wheel.stat().st_size == clean_size
+    check_wheel(wheel)

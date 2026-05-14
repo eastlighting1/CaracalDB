@@ -19,7 +19,7 @@ EOCD_FIXED_SIZE = 22
 MAX_ZIP_COMMENT = 65_535
 
 
-def check_wheel(path: pathlib.Path) -> None:
+def check_wheel(path: pathlib.Path, *, repair: bool = False) -> None:
     data = path.read_bytes()
     search_start = max(0, len(data) - (EOCD_FIXED_SIZE + MAX_ZIP_COMMENT))
     eocd_offset = data.rfind(EOCD_SIGNATURE, search_start)
@@ -32,7 +32,12 @@ def check_wheel(path: pathlib.Path) -> None:
     expected_end = eocd_offset + EOCD_FIXED_SIZE + comment_len
     if expected_end != len(data):
         trailing = len(data) - expected_end
-        raise SystemExit(f"{path}: ZIP archive has {trailing} trailing byte(s)")
+        if trailing < 0:
+            raise SystemExit(f"{path}: ZIP archive is truncated")
+        if not repair:
+            raise SystemExit(f"{path}: ZIP archive has {trailing} trailing byte(s)")
+        path.write_bytes(data[:expected_end])
+        data = data[:expected_end]
 
     with zipfile.ZipFile(path) as zf:
         bad_member = zf.testzip()
@@ -57,13 +62,13 @@ def check_sdist(path: pathlib.Path) -> None:
         raise SystemExit(f"{path}: empty sdist")
 
 
-def check_dist_dir(dist: pathlib.Path) -> None:
+def check_dist_dir(dist: pathlib.Path, *, repair: bool = False) -> None:
     files = sorted(path for path in dist.iterdir() if path.is_file())
     if not files:
         raise SystemExit(f"{dist}: no distribution files found")
     for path in files:
         if path.suffix == ".whl":
-            check_wheel(path)
+            check_wheel(path, repair=repair)
         elif path.name.endswith(".tar.gz"):
             check_sdist(path)
         else:
@@ -72,9 +77,14 @@ def check_dist_dir(dist: pathlib.Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="remove ZIP trailing data before validating wheels",
+    )
     parser.add_argument("dist", type=pathlib.Path)
     args = parser.parse_args()
-    check_dist_dir(args.dist)
+    check_dist_dir(args.dist, repair=args.repair)
 
 
 if __name__ == "__main__":

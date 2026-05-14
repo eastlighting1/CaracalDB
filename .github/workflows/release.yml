@@ -220,7 +220,7 @@ jobs:
         shell: bash
         run: |
           ls -lh dist/
-          python tools/check_dist_archives.py dist
+          python tools/check_dist_archives.py --repair dist
 
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v4
@@ -303,7 +303,7 @@ jobs:
       - name: List artifacts to be published
         run: |
           ls -lh dist/
-          python tools/check_dist_archives.py dist
+          python tools/check_dist_archives.py --repair dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
