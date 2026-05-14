@@ -56,10 +56,14 @@ def check_sdist(path: pathlib.Path) -> None:
     try:
         with tarfile.open(path, "r:gz") as tf:
             members = tf.getmembers()
+            names = [member.name for member in members]
     except tarfile.TarError as exc:
         raise SystemExit(f"{path}: invalid sdist tarball: {exc}") from exc
     if not members:
         raise SystemExit(f"{path}: empty sdist")
+    root = names[0].split("/", 1)[0]
+    if f"{root}/LICENSE" not in names:
+        raise SystemExit(f"{path}: LICENSE missing from sdist root")
 
 
 def check_dist_dir(dist: pathlib.Path, *, repair: bool = False) -> None:

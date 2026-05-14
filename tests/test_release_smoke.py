@@ -49,6 +49,7 @@ def test_pyproject_declares_rust_extension_build_metadata() -> None:
     assert "[tool.maturin]" in text
     assert 'module-name = "caracaldb._caracaldb_rust"' in text
     assert 'manifest-path = "crates/caracaldb-python/Cargo.toml"' in text
+    assert 'include = [{ path = "LICENSE", format = "sdist" }]' in text
 
 
 def test_release_workflow_smokes_wheel_outside_checkout() -> None:
@@ -65,6 +66,7 @@ def test_dist_archive_checker_rejects_trailing_wheel_data() -> None:
     assert "ZIP archive has {trailing} trailing byte(s)" in text
     assert "expected_end != len(data)" in text
     assert "Rust extension missing from wheel" in text
+    assert "LICENSE missing from sdist root" in text
 
 
 def test_dist_archive_checker_detects_actual_trailing_bytes(tmp_path: Path) -> None:
