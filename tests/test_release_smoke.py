@@ -45,3 +45,10 @@ def test_pyproject_declares_rust_extension_build_metadata() -> None:
     assert "[tool.maturin]" in text
     assert 'module-name = "caracaldb._caracaldb_rust"' in text
     assert 'manifest-path = "crates/caracaldb-python/Cargo.toml"' in text
+
+
+def test_release_workflow_smokes_wheel_outside_checkout() -> None:
+    text = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert 'SMOKE_DIR="$(mktemp -d)"' in text
+    assert 'cd "$SMOKE_DIR"' in text
+    assert "Rust extension missing from wheel" in text

@@ -218,7 +218,25 @@ jobs:
 
       - name: Verify artifacts
         shell: bash
-        run: ls -lh dist/
+        run: |
+          ls -lh dist/
+          python - <<'PY'
+          import pathlib
+          import zipfile
+
+          wheels = list(pathlib.Path("dist").glob("*.whl"))
+          if not wheels:
+              raise SystemExit("no wheel produced")
+          for wheel in wheels:
+              with zipfile.ZipFile(wheel) as zf:
+                  names = zf.namelist()
+              if not any(
+                  name.startswith("caracaldb/_caracaldb_rust")
+                  and name.endswith((".so", ".pyd"))
+                  for name in names
+              ):
+                  raise SystemExit(f"Rust extension missing from wheel: {wheel}")
+          PY
 
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v4
@@ -268,9 +286,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install dist/*.whl
-          python -c "import caracaldb as cdb; print(cdb.__version__)"
-          python -c "import caracaldb._caracaldb_rust as r; print(r.rust_engine_version())"
-          caracal --help
+          SMOKE_DIR="$(mktemp -d)"
+          (
+            cd "$SMOKE_DIR"
+            python -c "import caracaldb as cdb; print(cdb.__version__)"
+            python -c "import caracaldb._caracaldb_rust as r; print(r.rust_engine_version())"
+            caracal --help
+          )
 
   # -- Publish to PyPI with Trusted Publishing --------------------------------
   publish-pypi:
