@@ -172,12 +172,12 @@ class CsrReader:
         change = np.concatenate(([True], src_rep[1:] != src_rep[:-1]))
         seg_start = np.flatnonzero(change)
         seg_end = np.concatenate((seg_start[1:], [src_rep.size]))
-        keep_mask = np.zeros(src_rep.size, dtype=bool)
         keep_idx: list[np.ndarray] = []
         for start, end in zip(seg_start, seg_end, strict=True):
             size = int(end - start)
             if size <= fanout and not replace:
-                keep_mask[start:end] = True
+                chosen = np.arange(start, end, dtype=np.int64)
+                keep_idx.append(chosen)
                 continue
             elif strategy == "first":
                 if replace and size < fanout:
@@ -190,9 +190,7 @@ class CsrReader:
                 offsets = rng.choice(size, size=fanout, replace=replace)
                 chosen = start + offsets.astype(np.int64, copy=False)
             keep_idx.append(chosen)
-        if keep_idx:
-            keep_mask[np.concatenate(keep_idx)] = True
-        idx = np.flatnonzero(keep_mask)
+        idx = np.concatenate(keep_idx) if keep_idx else np.empty(0, dtype=np.int64)
         sampled_eid = None if eid is None else np.asarray(eid)[idx]
         return src_rep[idx], dst[idx], sampled_eid
 

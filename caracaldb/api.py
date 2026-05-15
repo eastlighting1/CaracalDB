@@ -6873,10 +6873,14 @@ def _query_nodes(db: Database, label: str, where: str, *, return_col: str) -> np
             # Fall back to Arrow filtering
             expr = None
             col = pc.field(prop)
-            if op == ">=": expr = col >= val
-            elif op == "<=": expr = col <= val
-            elif op == ">": expr = col > val
-            elif op == "<": expr = col < val
+            if op == ">=":
+                expr = col >= val
+            elif op == "<=":
+                expr = col <= val
+            elif op == ">":
+                expr = col > val
+            elif op == "<":
+                expr = col < val
             filtered = table.filter(expr)
             return filtered[return_col].to_numpy()
     else:
@@ -6936,7 +6940,9 @@ def _parse_simple_equality(where: str) -> tuple[str, Any] | None:
     return match.group(1), value
 
 
-def _gnn_neighbor_loader_worker_sample(payload: tuple[int, Any, dict[str, Any]]) -> tuple[np.ndarray, np.ndarray]:
+def _gnn_neighbor_loader_worker_sample(
+    payload: tuple[int, Any, dict[str, Any]],
+) -> tuple[np.ndarray, np.ndarray]:
     start, chunk, params = payload
     import caracaldb
 
@@ -7049,8 +7055,7 @@ class _GnnNeighborLoader:
             payloads = [(start, chunk, params) for start, chunk in chunks]
                  
             with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
-                for res in executor.map(_gnn_neighbor_loader_worker_sample, payloads):
-                    yield res
+                yield from executor.map(_gnn_neighbor_loader_worker_sample, payloads)
         else:
             for start, chunk in chunks:
                 yield _sample_gnn_subgraph(
@@ -7231,11 +7236,19 @@ def _sample_gnn_subgraph(
         if n_id.size and int(n_id.max()) < max(int(n_id.size) * 4, 1024):
             local_map = np.full(int(n_id.max()) + 1, -1, dtype=np.int64)
             local_map[n_id.astype(np.int64, copy=False)] = np.arange(n_id.size, dtype=np.int64)
-            valid = (edge_src >= 0) & (edge_dst >= 0) & (edge_src < local_map.size) & (edge_dst < local_map.size)
+            valid = (
+                (edge_src >= 0)
+                & (edge_dst >= 0)
+                & (edge_src < local_map.size)
+                & (edge_dst < local_map.size)
+            )
             local_src = local_map[edge_src[valid]]
             local_dst = local_map[edge_dst[valid]]
             valid_local = (local_src >= 0) & (local_dst >= 0)
-            edge_index = np.vstack((local_src[valid_local], local_dst[valid_local])).astype(np.int64, copy=False)
+            edge_index = np.vstack((local_src[valid_local], local_dst[valid_local])).astype(
+                np.int64,
+                copy=False,
+            )
         else:
             local = {node: idx for idx, node in enumerate(ordered_nodes)}
             local_edges = [
