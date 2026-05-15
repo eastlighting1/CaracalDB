@@ -356,6 +356,7 @@ class Database:
         self._mode = _mode
         self._closed = False
         self._csr_cache: dict[str, dict[str, CsrReader]] = {}
+        self._external_id_map_cache: dict[str, dict[Any, int]] = {}
         self._engine: EngineSelection = resolve_engine()
 
     @property
@@ -1684,6 +1685,7 @@ class Database:
     def _invalidate_graph_indexes(self, relation_local: str | None = None) -> None:
         if relation_local is None:
             self._csr_cache.clear()
+            self._external_id_map_cache.clear()
             graph_dir = self._bundle.child("graph")
             targets = list(graph_dir.glob("*/*.csr")) + list(graph_dir.glob("*/*.csc"))
             degree_cache = getattr(self, "_degree_cache", None)
@@ -6846,13 +6848,45 @@ def _query_nodes(db: Database, label: str, where: str, *, return_col: str) -> np
     if predicate.lower() in {"", "true", "*"}:
         result = table[return_col].to_pylist()
         return np.asarray(result)
-    equality = _parse_simple_equality(predicate)
-    if equality is None:
-        raise CaracalError(
-            code="CDB-6020",
-            message="query_nodes currently supports simple equality predicates",
-            hint='use syntax like "split = \'train\'" or "label == 1"',
-        )
+    
+    # Try parsing range predicates like "year >= 2010"
+    match = __import__("re").match(r"^([a-zA-Z0-9_]+)\s*(>=|<=|>|<|==|=)\s*(.+)$", predicate)
+    if match:
+        prop, op, val = match.groups()
+        val = val.strip()
+        if val.isdigit() or (val.startswith("-") and val[1:].isdigit()):
+            val = int(val)
+        else:
+            try:
+                val = float(val)
+            except ValueError:
+                val = val.strip("'").strip('"')
+                
+        import pyarrow.compute as pc
+        if op in ("=", "=="):
+            equality = _parse_simple_equality(predicate)
+            if equality:
+                property_name, value = equality
+            else:
+                property_name, value = prop, val
+        else:
+            # Fall back to Arrow filtering
+            expr = None
+            col = pc.field(prop)
+            if op == ">=": expr = col >= val
+            elif op == "<=": expr = col <= val
+            elif op == ">": expr = col > val
+            elif op == "<": expr = col < val
+            filtered = table.filter(expr)
+            return filtered[return_col].to_numpy()
+    else:
+        equality = _parse_simple_equality(predicate)
+        if equality is None:
+            raise CaracalError(
+                code="CDB-6020",
+                message="query_nodes supports equality and range predicates",
+                hint='use syntax like "split = \'train\'" or "year >= 2014"',
+            )
     property_name, value = equality
     if property_name not in table.column_names:
         raise CaracalError(
@@ -6902,6 +6936,35 @@ def _parse_simple_equality(where: str) -> tuple[str, Any] | None:
     return match.group(1), value
 
 
+def _gnn_neighbor_loader_worker_sample(payload: tuple[int, Any, dict[str, Any]]) -> tuple[np.ndarray, np.ndarray]:
+    start, chunk, params = payload
+    import caracaldb
+
+    global _WORKER_DB
+    db_path = params["db_path"]
+    if "_WORKER_DB" not in globals() or _WORKER_DB is None:
+        _WORKER_DB = caracaldb.connect(db_path, format="bundle", mode="ro")
+        if params["warm_start"]:
+            _warm_gnn_readers(_WORKER_DB, params["edge_types"], params["direction"])
+
+    seed_base = params["seed_base"]
+    return _sample_gnn_subgraph(
+        _WORKER_DB,
+        chunk,
+        params["fanouts"],
+        params["edge_types"],
+        direction=params["direction"],
+        node_key_col=params["node_key_col"],
+        id_space=params["id_space"],
+        replace=params["replace"],
+        seed=None if seed_base is None else int(seed_base) + start,
+        strategy=params["strategy"],
+        max_nodes=None,
+        max_edges=None,
+        return_format=params["return_format"],
+    )
+
+
 class _GnnNeighborLoader:
     def __init__(
         self,
@@ -6942,6 +7005,8 @@ class _GnnNeighborLoader:
         self._seed = seed
         self._strategy = strategy
         self._return_format = return_format
+        self._num_workers = num_workers
+        self._warm_start = warm_start
         self._seeds = _resolve_loader_input_nodes(
             db,
             input_nodes,
@@ -6954,28 +7019,55 @@ class _GnnNeighborLoader:
 
     def __iter__(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:
         import numpy as np
-
+        
         seeds = np.asarray(self._seeds).copy()
         rng = np.random.default_rng(self._seed)
         if self._shuffle and seeds.size:
             rng.shuffle(seeds)
+            
+        chunks = []
         for start in range(0, seeds.size, self._batch_size):
             chunk = seeds[start : start + self._batch_size]
-            yield _sample_gnn_subgraph(
-                self._db,
-                chunk,
-                self._fanouts,
-                self._edge_types,
-                direction=self._direction,
-                node_key_col=self._node_key_col,
-                id_space=self._id_space,
-                replace=self._replace,
-                seed=None if self._seed is None else int(self._seed) + start,
-                strategy=self._strategy,
-                max_nodes=None,
-                max_edges=None,
-                return_format=self._return_format,
-            )
+            chunks.append((start, chunk))
+            
+        num_workers = getattr(self, "_num_workers", 0)
+        if num_workers > 0:
+            import concurrent.futures
+            params = {
+                "db_path": str(self._db._bundle.path),
+                "warm_start": getattr(self, "_warm_start", False),
+                "edge_types": self._edge_types,
+                "direction": self._direction,
+                "fanouts": self._fanouts,
+                "node_key_col": self._node_key_col,
+                "id_space": self._id_space,
+                "replace": self._replace,
+                "seed_base": self._seed,
+                "strategy": self._strategy,
+                "return_format": self._return_format,
+            }
+            payloads = [(start, chunk, params) for start, chunk in chunks]
+                 
+            with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+                for res in executor.map(_gnn_neighbor_loader_worker_sample, payloads):
+                    yield res
+        else:
+            for start, chunk in chunks:
+                yield _sample_gnn_subgraph(
+                    self._db,
+                    chunk,
+                    self._fanouts,
+                    self._edge_types,
+                    direction=self._direction,
+                    node_key_col=self._node_key_col,
+                    id_space=self._id_space,
+                    replace=self._replace,
+                    seed=None if self._seed is None else int(self._seed) + start,
+                    strategy=self._strategy,
+                    max_nodes=None,
+                    max_edges=None,
+                    return_format=self._return_format,
+                )
 
 
 def _resolve_loader_input_nodes(
@@ -7052,10 +7144,14 @@ def _sample_gnn_subgraph(
 
     seed_ids = _gnn_seed_ids(db, seeds, node_key_col=node_key_col, id_space=id_space)
     ordered_nodes = list(dict.fromkeys(int(item) for item in seed_ids.tolist()))
+    ordered_node_set = set(ordered_nodes)
     if max_nodes is not None:
         ordered_nodes = ordered_nodes[:max_nodes]
+        ordered_node_set = set(ordered_nodes)
     frontier = np.asarray(ordered_nodes, dtype=np.uint64)
-    edge_pairs: list[tuple[int, int]] = []
+    edge_src_chunks: list[np.ndarray] = []
+    edge_dst_chunks: list[np.ndarray] = []
+    edge_count = 0
     rng = np.random.default_rng(seed)
 
     for fanout in fanout_values:
@@ -7083,20 +7179,34 @@ def _sample_gnn_subgraph(
                 else:
                     src_global = src_rep
                     dst_global = dst
-                for src, out_dst in zip(src_global.tolist(), dst_global.tolist(), strict=True):
-                    if max_edges is not None and len(edge_pairs) >= max_edges:
+
+                if max_edges is not None:
+                    remaining = max_edges - edge_count
+                    if remaining <= 0:
                         break
-                    edge_pairs.append((int(src), int(out_dst)))
-                    if max_nodes is None or len(ordered_nodes) < max_nodes:
-                        if int(src) not in ordered_nodes:
-                            ordered_nodes.append(int(src))
-                        if int(out_dst) not in ordered_nodes:
-                            ordered_nodes.append(int(out_dst))
+                    src_global = src_global[:remaining]
+                    dst_global = dst_global[:remaining]
+
+                src_i64 = np.asarray(src_global, dtype=np.int64)
+                dst_i64 = np.asarray(dst_global, dtype=np.int64)
+                edge_src_chunks.append(src_i64)
+                edge_dst_chunks.append(dst_i64)
+                edge_count += int(src_i64.size)
+
+                if max_nodes is None or len(ordered_nodes) < max_nodes:
+                    candidates = np.unique(np.concatenate((src_i64, dst_i64)))
+                    for node in candidates.tolist():
+                        node = int(node)
+                        if node not in ordered_node_set:
+                            if max_nodes is not None and len(ordered_nodes) >= max_nodes:
+                                break
+                            ordered_node_set.add(node)
+                            ordered_nodes.append(node)
                 next_hop = src_global if normalize_incoming else dst_global
                 next_chunks.append(next_hop.astype(np.uint64, copy=False))
-                if max_edges is not None and len(edge_pairs) >= max_edges:
+                if max_edges is not None and edge_count >= max_edges:
                     break
-            if max_edges is not None and len(edge_pairs) >= max_edges:
+            if max_edges is not None and edge_count >= max_edges:
                 break
         if not next_chunks:
             break
@@ -7110,14 +7220,34 @@ def _sample_gnn_subgraph(
         frontier = next_frontier
 
     n_id = np.asarray(ordered_nodes, dtype=np.uint64)
-    local = {node: idx for idx, node in enumerate(ordered_nodes)}
-    local_edges = [
-        (local[src], local[dst]) for src, dst in edge_pairs if src in local and dst in local
-    ]
-    if not local_edges:
+    if not edge_src_chunks:
         edge_index = np.empty((2, 0), dtype=np.int64)
     else:
-        edge_index = np.asarray(local_edges, dtype=np.int64).T
+        edge_src = np.concatenate(edge_src_chunks)
+        edge_dst = np.concatenate(edge_dst_chunks)
+
+        # Fast path for the benchmark/common GNN case where graph ids are
+        # dense integers. Fall back to a dict for sparse/custom ids.
+        if n_id.size and int(n_id.max()) < max(int(n_id.size) * 4, 1024):
+            local_map = np.full(int(n_id.max()) + 1, -1, dtype=np.int64)
+            local_map[n_id.astype(np.int64, copy=False)] = np.arange(n_id.size, dtype=np.int64)
+            valid = (edge_src >= 0) & (edge_dst >= 0) & (edge_src < local_map.size) & (edge_dst < local_map.size)
+            local_src = local_map[edge_src[valid]]
+            local_dst = local_map[edge_dst[valid]]
+            valid_local = (local_src >= 0) & (local_dst >= 0)
+            edge_index = np.vstack((local_src[valid_local], local_dst[valid_local])).astype(np.int64, copy=False)
+        else:
+            local = {node: idx for idx, node in enumerate(ordered_nodes)}
+            local_edges = [
+                (local[src], local[dst])
+                for src, dst in zip(edge_src.tolist(), edge_dst.tolist(), strict=True)
+                if src in local and dst in local
+            ]
+            edge_index = (
+                np.asarray(local_edges, dtype=np.int64).T
+                if local_edges
+                else np.empty((2, 0), dtype=np.int64)
+            )
     return edge_index, n_id
 
 
@@ -7936,6 +8066,12 @@ def _type_from_external_id(external_id: Any) -> str:
 
 
 def _external_id_map(db: Database, *, key_col: str) -> dict[Any, int]:
+    cache = getattr(db, "_external_id_map_cache", None)
+    if cache is None:
+        cache = db._external_id_map_cache = {}
+    if key_col in cache:
+        return cache[key_col]
+
     result: dict[Any, int] = {}
     for class_name in list_node_stores(db.bundle):
         cls = db._find_class(class_name)
@@ -7951,6 +8087,7 @@ def _external_id_map(db: Database, *, key_col: str) -> dict[Any, int]:
         gids = table[_INTERNAL_GID_COLUMN].to_pylist()
         for key, gid in zip(keys, gids, strict=True):
             result[key] = int(gid)
+    cache[key_col] = result
     return result
 
 

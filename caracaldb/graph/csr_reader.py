@@ -132,15 +132,21 @@ class CsrReader:
         if strategy == "all":
             effective_fanout = None
         if effective_fanout is not None:
-            src_rep, dst, eid = self._sample_segments(
-                src_rep,
-                np.asarray(dst, dtype=np.uint64),
-                eid,
-                effective_fanout,
-                replace=replace,
-                seed=seed,
-                strategy=strategy,
-            )
+            dst = np.asarray(dst, dtype=np.uint64)
+            if not replace and lens.max(initial=0) <= effective_fanout:
+                # Sparse graph fast path: every requested segment already fits
+                # inside the fanout, so sampling would only re-select all edges.
+                pass
+            else:
+                src_rep, dst, eid = self._sample_segments(
+                    src_rep,
+                    dst,
+                    eid,
+                    effective_fanout,
+                    replace=replace,
+                    seed=seed,
+                    strategy=strategy,
+                )
         else:
             dst = np.asarray(dst, dtype=np.uint64)
 
@@ -166,11 +172,13 @@ class CsrReader:
         change = np.concatenate(([True], src_rep[1:] != src_rep[:-1]))
         seg_start = np.flatnonzero(change)
         seg_end = np.concatenate((seg_start[1:], [src_rep.size]))
+        keep_mask = np.zeros(src_rep.size, dtype=bool)
         keep_idx: list[np.ndarray] = []
         for start, end in zip(seg_start, seg_end, strict=True):
             size = int(end - start)
             if size <= fanout and not replace:
-                chosen = np.arange(start, end, dtype=np.int64)
+                keep_mask[start:end] = True
+                continue
             elif strategy == "first":
                 if replace and size < fanout:
                     base = np.arange(start, end, dtype=np.int64)
@@ -182,7 +190,9 @@ class CsrReader:
                 offsets = rng.choice(size, size=fanout, replace=replace)
                 chosen = start + offsets.astype(np.int64, copy=False)
             keep_idx.append(chosen)
-        idx = np.concatenate(keep_idx) if keep_idx else np.empty(0, dtype=np.int64)
+        if keep_idx:
+            keep_mask[np.concatenate(keep_idx)] = True
+        idx = np.flatnonzero(keep_mask)
         sampled_eid = None if eid is None else np.asarray(eid)[idx]
         return src_rep[idx], dst[idx], sampled_eid
 
