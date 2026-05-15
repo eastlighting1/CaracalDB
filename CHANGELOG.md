@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] - 2026-05-15
+
+### Fixed
+
+- Fixed CSR replacement sampling so `CsrReader.batch_neighbors(...,
+  replace=True)` can return repeated neighbors when fanout exceeds degree.
+- Kept the GNN neighbor-loader implementation ruff-clean by expanding compact
+  conditionals, wrapping dense edge-index expressions, and simplifying worker
+  result yielding.
+
 ## [1.0.1] - 2026-05-14
 
 ### Fixed

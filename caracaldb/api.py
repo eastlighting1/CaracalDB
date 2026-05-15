@@ -6848,7 +6848,7 @@ def _query_nodes(db: Database, label: str, where: str, *, return_col: str) -> np
     if predicate.lower() in {"", "true", "*"}:
         result = table[return_col].to_pylist()
         return np.asarray(result)
-    
+
     # Try parsing range predicates like "year >= 2010"
     match = __import__("re").match(r"^([a-zA-Z0-9_]+)\s*(>=|<=|>|<|==|=)\s*(.+)$", predicate)
     if match:
@@ -6861,8 +6861,9 @@ def _query_nodes(db: Database, label: str, where: str, *, return_col: str) -> np
                 val = float(val)
             except ValueError:
                 val = val.strip("'").strip('"')
-                
+
         import pyarrow.compute as pc
+
         if op in ("=", "=="):
             equality = _parse_simple_equality(predicate)
             if equality:
@@ -7025,20 +7026,21 @@ class _GnnNeighborLoader:
 
     def __iter__(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:
         import numpy as np
-        
+
         seeds = np.asarray(self._seeds).copy()
         rng = np.random.default_rng(self._seed)
         if self._shuffle and seeds.size:
             rng.shuffle(seeds)
-            
+
         chunks = []
         for start in range(0, seeds.size, self._batch_size):
             chunk = seeds[start : start + self._batch_size]
             chunks.append((start, chunk))
-            
+
         num_workers = getattr(self, "_num_workers", 0)
         if num_workers > 0:
             import concurrent.futures
+
             params = {
                 "db_path": str(self._db._bundle.path),
                 "warm_start": getattr(self, "_warm_start", False),
@@ -7053,7 +7055,7 @@ class _GnnNeighborLoader:
                 "return_format": self._return_format,
             }
             payloads = [(start, chunk, params) for start, chunk in chunks]
-                 
+
             with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
                 yield from executor.map(_gnn_neighbor_loader_worker_sample, payloads)
         else:
