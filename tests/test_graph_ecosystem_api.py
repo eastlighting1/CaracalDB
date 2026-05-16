@@ -67,6 +67,59 @@ def test_vector_index_lifecycle_search_filter_and_reopen(tmp_path: Path) -> None
     assert dropped is True
 
 
+def test_vector_entries_are_cached_for_repeated_searches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import caracaldb.api as api
+
+    calls = 0
+    original = api._node_table_for_local
+
+    def counting_node_table_for_local(db, class_name):
+        nonlocal calls
+        calls += 1
+        return original(db, class_name)
+
+    monkeypatch.setattr(api, "_node_table_for_local", counting_node_table_for_local)
+
+    with cdb.connect(tmp_path / "vec-cache", format="bundle") as db:
+        db.insert_node_table_arrow(
+            pa.table(
+                {
+                    "node_id": pa.array(["c1", "c2", "c3"]),
+                    "type": pa.array(["Chunk", "Chunk", "Chunk"]),
+                    "text": pa.array(["alpha", "beta", "near alpha"]),
+                    "embedding": _embedding_array(
+                        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.9, 0.1, 0.0],
+                        3,
+                    ),
+                }
+            )
+        )
+        db.create_vector_index(
+            name="cached_chunk_embedding_hnsw",
+            node_type="Chunk",
+            property="embedding",
+            dimension=3,
+            metric="cosine",
+            algorithm="hnsw",
+        )
+
+        for _ in range(3):
+            rows = db.vector_search(
+                index="cached_chunk_embedding_hnsw",
+                query_vector=[1.0, 0.0, 0.0],
+                top_k=2,
+                return_properties=["text"],
+            ).rows()
+            assert [row["node_id"] for row in rows] == ["c1", "c3"]
+
+    # One source-table read validates index creation and one materializes the
+    # cached vector entries. Repeated searches must not add more reads.
+    assert calls == 2
+
+
 def test_vector_dimension_mismatch_and_empty_index(tmp_path: Path) -> None:
     with cdb.connect(tmp_path / "vec-errors", format="bundle") as db:
         db.insert_node_table_arrow(

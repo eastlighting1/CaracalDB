@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.3] - 2026-05-16
+
+### Fixed
+
+- Fixed the vector entry cache so repeated `vector_search` calls reuse the
+  materialized Arrow node table and NumPy vector entries instead of rebuilding
+  them per query.
+- Restored expected GraphRAG native vector-search performance for workloads
+  that issue many semantic retrieval calls against the same open database.
+
 ## [1.0.2] - 2026-05-15
 
 ### Fixed

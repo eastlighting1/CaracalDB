@@ -21,15 +21,14 @@ RELEASE_VERSION = caracaldb.__version__
 
 
 def test_version_is_current_release() -> None:
-    assert RELEASE_VERSION == "1.0.2"
+    assert RELEASE_VERSION == "1.0.3"
 
 
 def test_changelog_contains_release_section() -> None:
     text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert f"[{RELEASE_VERSION}]" in text
-    assert "replacement sampling" in text
-    assert "ruff-clean" in text
-    assert "GNN neighbor-loader" in text
+    assert "vector entry cache" in text
+    assert "GraphRAG" in text
 
 
 def test_release_notes_exist() -> None:

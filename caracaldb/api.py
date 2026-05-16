@@ -2954,7 +2954,8 @@ def _vector_entries(
                 ),
             )
         entries.append({"internal_id": int(row[id_column]), "row": row, "vector": vector})
-    return entries, table
+    cache[key] = (entries, table)
+    return cache[key]
 
 
 def _node_table_for_local(db: Database, class_name: str) -> pa.Table:

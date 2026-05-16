@@ -1,6 +1,6 @@
 [package]
 name = "caracaldb-python"
-version = "1.0.2"
+version = "1.0.3"
 description = "PyO3 bindings for the CaracalDB Rust core."
 edition.workspace = true
 license.workspace = true
